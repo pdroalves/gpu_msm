@@ -1,0 +1,102 @@
+#pragma once
+
+#include <cstdint>
+#include <cuda_runtime.h>
+
+// BLS12-446: 446-bit prime field
+// Using 7 limbs of 64 bits each (448 bits total, 2 bits headroom)
+#define FP_LIMBS 7
+#define FP_BITS 446
+
+// Little-endian limbs: limb[0] is least significant word
+// Note: This is a POD (Plain Old Data) type for CUDA __constant__ compatibility
+struct Fp {
+    uint64_t limb[FP_LIMBS];
+};
+
+// Prime modulus p for BLS12-446
+// Device-side constant (declared in fp.cu)
+extern __constant__ Fp DEVICE_MODULUS;
+
+// Montgomery constants
+// R = 2^448 (for 7 limbs of 64 bits)
+// R^2 mod p, R_INV mod p, and p' = -p^(-1) mod 2^64
+extern __constant__ Fp DEVICE_R2;
+extern __constant__ Fp DEVICE_R_INV;
+extern __constant__ uint64_t DEVICE_P_PRIME;
+
+// Host-side initialization function
+// Call this once before using device code
+void init_device_modulus();
+
+// Multi-precision arithmetic operations
+// All operations are CUDA-compatible (can be called from host or device)
+
+// Comparison: returns -1 if a < b, 0 if a == b, 1 if a > b
+__host__ __device__ int fp_cmp(const Fp& a, const Fp& b);
+
+// Check if a == 0
+__host__ __device__ bool fp_is_zero(const Fp& a);
+
+// Check if a == 1
+__host__ __device__ bool fp_is_one(const Fp& a);
+
+// Set to zero
+__host__ __device__ void fp_zero(Fp& a);
+
+// Set to one (normal form)
+__host__ __device__ void fp_one(Fp& a);
+
+// Set to one in Montgomery form (R mod p)
+__host__ __device__ void fp_one_montgomery(Fp& a);
+
+// Copy: dst = src
+__host__ __device__ void fp_copy(Fp& dst, const Fp& src);
+
+// Addition: c = a + b (without reduction)
+// Returns carry out
+__host__ __device__ uint64_t fp_add_raw(Fp& c, const Fp& a, const Fp& b);
+
+// Subtraction: c = a - b (without reduction)
+// Returns borrow (1 if a < b, 0 otherwise)
+__host__ __device__ uint64_t fp_sub_raw(Fp& c, const Fp& a, const Fp& b);
+
+// Addition with modular reduction: c = (a + b) mod p
+__host__ __device__ void fp_add(Fp& c, const Fp& a, const Fp& b);
+
+// Subtraction with modular reduction: c = (a - b) mod p
+__host__ __device__ void fp_sub(Fp& c, const Fp& a, const Fp& b);
+
+// Multiplication: c = a * b (without reduction)
+// Result stored in double-width (14 limbs)
+__host__ __device__ void fp_mul_raw(uint64_t* c, const Fp& a, const Fp& b);
+
+// Modular reduction: c = a mod p (where a is 2*FP_LIMBS limbs)
+__host__ __device__ void fp_reduce(Fp& c, const uint64_t* a);
+
+// Montgomery reduction: c = (a * R_INV) mod p
+// Input a is 2*FP_LIMBS limbs (result of multiplication)
+// Output c is FP_LIMBS limbs in Montgomery form
+__host__ __device__ void fp_mont_reduce(Fp& c, const uint64_t* a);
+
+// Montgomery multiplication: c = (a * b * R_INV) mod p
+// Both a and b are in Montgomery form, result is in Montgomery form
+__host__ __device__ void fp_mont_mul(Fp& c, const Fp& a, const Fp& b);
+
+// Convert to Montgomery form: c = (a * R) mod p
+__host__ __device__ void fp_to_montgomery(Fp& c, const Fp& a);
+
+// Convert from Montgomery form: c = (a * R_INV) mod p
+__host__ __device__ void fp_from_montgomery(Fp& c, const Fp& a);
+
+// Multiplication with modular reduction: c = (a * b) mod p
+// NOTE: This now uses Montgomery form internally
+// For external API, use fp_mont_mul if values are already in Montgomery form
+__host__ __device__ void fp_mul(Fp& c, const Fp& a, const Fp& b);
+
+// Negation: c = -a mod p
+__host__ __device__ void fp_neg(Fp& c, const Fp& a);
+
+// Conditional assignment: if condition, dst = src, else dst unchanged
+__host__ __device__ void fp_cmov(Fp& dst, const Fp& src, uint64_t condition);
+
