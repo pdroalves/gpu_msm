@@ -5,6 +5,208 @@
 #include <cstring>
 #include <cstdio>
 
+// ============================================================================
+// Template Traits System for Point Operations
+// ============================================================================
+// This traits system allows us to write generic point operations that work
+// for both G1 (Fp) and G2 (Fp2) points using the same algorithm.
+
+template<typename PointType>
+struct PointTraits;
+
+// Specialization for G1Point (uses Fp)
+template<>
+struct PointTraits<G1Point> {
+    using FieldType = Fp;
+    
+    __host__ __device__ static void field_zero(FieldType& a) { fp_zero(a); }
+    __host__ __device__ static void field_copy(FieldType& dst, const FieldType& src) { fp_copy(dst, src); }
+    __host__ __device__ static void field_neg(FieldType& c, const FieldType& a) { fp_neg(c, a); }
+    __host__ __device__ static void field_add(FieldType& c, const FieldType& a, const FieldType& b) { fp_add(c, a, b); }
+    __host__ __device__ static void field_sub(FieldType& c, const FieldType& a, const FieldType& b) { fp_sub(c, a, b); }
+    __host__ __device__ static void field_mul(FieldType& c, const FieldType& a, const FieldType& b) { fp_mul(c, a, b); }
+    __host__ __device__ static void field_inv(FieldType& c, const FieldType& a) { fp_inv(c, a); }
+    __host__ __device__ static int field_cmp(const FieldType& a, const FieldType& b) { return fp_cmp(a, b); }
+    __host__ __device__ static bool field_is_zero(const FieldType& a) { return fp_is_zero(a); }
+    
+    __host__ __device__ static void point_at_infinity(G1Point& point) { g1_point_at_infinity(point); }
+    __host__ __device__ static bool is_infinity(const G1Point& point) { return g1_is_infinity(point); }
+    __host__ __device__ static const FieldType& curve_b() { return curve_b_g1(); }
+};
+
+// Specialization for G2Point (uses Fp2)
+template<>
+struct PointTraits<G2Point> {
+    using FieldType = Fp2;
+    
+    __host__ __device__ static void field_zero(FieldType& a) { fp2_zero(a); }
+    __host__ __device__ static void field_copy(FieldType& dst, const FieldType& src) { fp2_copy(dst, src); }
+    __host__ __device__ static void field_neg(FieldType& c, const FieldType& a) { fp2_neg(c, a); }
+    __host__ __device__ static void field_add(FieldType& c, const FieldType& a, const FieldType& b) { fp2_add(c, a, b); }
+    __host__ __device__ static void field_sub(FieldType& c, const FieldType& a, const FieldType& b) { fp2_sub(c, a, b); }
+    __host__ __device__ static void field_mul(FieldType& c, const FieldType& a, const FieldType& b) { fp2_mul(c, a, b); }
+    __host__ __device__ static void field_inv(FieldType& c, const FieldType& a) { fp2_inv(c, a); }
+    __host__ __device__ static int field_cmp(const FieldType& a, const FieldType& b) { return fp2_cmp(a, b); }
+    __host__ __device__ static bool field_is_zero(const FieldType& a) { return fp2_is_zero(a); }
+    
+    __host__ __device__ static void point_at_infinity(G2Point& point) { g2_point_at_infinity(point); }
+    __host__ __device__ static bool is_infinity(const G2Point& point) { return g2_is_infinity(point); }
+    __host__ __device__ static const FieldType& curve_b() { return curve_b_g2(); }
+};
+
+// ============================================================================
+// Template Point Operations
+// ============================================================================
+
+// Generic point negation: result = -p = (x, -y)
+template<typename PointType>
+__host__ __device__ void point_neg(PointType& result, const PointType& p) {
+    using Traits = PointTraits<PointType>;
+    if (Traits::is_infinity(p)) {
+        Traits::point_at_infinity(result);
+        return;
+    }
+    Traits::field_copy(result.x, p.x);
+    Traits::field_neg(result.y, p.y);
+    result.infinity = false;
+}
+
+// Generic point doubling: result = 2 * p
+template<typename PointType>
+__host__ __device__ void point_double(PointType& result, const PointType& p) {
+    using Traits = PointTraits<PointType>;
+    using FieldType = typename Traits::FieldType;
+    
+    if (Traits::is_infinity(p) || Traits::field_is_zero(p.y)) {
+        Traits::point_at_infinity(result);
+        return;
+    }
+    
+    // Compute lambda = 3*x^2 / (2*y)
+    FieldType x_squared, three_x_squared, two_y, lambda;
+    Traits::field_mul(x_squared, p.x, p.x);
+    Traits::field_add(three_x_squared, x_squared, x_squared);  // 2*x^2
+    Traits::field_add(three_x_squared, three_x_squared, x_squared);  // 3*x^2
+    
+    Traits::field_add(two_y, p.y, p.y);  // 2*y
+    Traits::field_inv(lambda, two_y);  // 1/(2*y)
+    Traits::field_mul(lambda, lambda, three_x_squared);  // 3*x^2 / (2*y)
+    
+    // x_result = lambda^2 - 2*x
+    FieldType lambda_squared, two_x, x_result;
+    Traits::field_mul(lambda_squared, lambda, lambda);
+    Traits::field_add(two_x, p.x, p.x);  // 2*x
+    Traits::field_sub(x_result, lambda_squared, two_x);
+    
+    // y_result = lambda*(x - x_result) - y
+    FieldType x_minus_xr, y_result;
+    Traits::field_sub(x_minus_xr, p.x, x_result);
+    Traits::field_mul(y_result, lambda, x_minus_xr);
+    Traits::field_sub(y_result, y_result, p.y);
+    
+    Traits::field_copy(result.x, x_result);
+    Traits::field_copy(result.y, y_result);
+    result.infinity = false;
+}
+
+// Generic point addition: result = p1 + p2
+template<typename PointType>
+__host__ __device__ void point_add(PointType& result, const PointType& p1, const PointType& p2) {
+    using Traits = PointTraits<PointType>;
+    using FieldType = typename Traits::FieldType;
+    
+    // Handle infinity cases
+    if (Traits::is_infinity(p1)) {
+        Traits::field_copy(result.x, p2.x);
+        Traits::field_copy(result.y, p2.y);
+        result.infinity = p2.infinity;
+        return;
+    }
+    if (Traits::is_infinity(p2)) {
+        Traits::field_copy(result.x, p1.x);
+        Traits::field_copy(result.y, p1.y);
+        result.infinity = p1.infinity;
+        return;
+    }
+    
+    // Check if p1 == -p2 (same x, opposite y)
+    FieldType neg_y2;
+    Traits::field_neg(neg_y2, p2.y);
+    if (Traits::field_cmp(p1.x, p2.x) == 0 && Traits::field_cmp(p1.y, neg_y2) == 0) {
+        Traits::point_at_infinity(result);
+        return;
+    }
+    
+    // Check if p1 == p2 (use doubling)
+    if (Traits::field_cmp(p1.x, p2.x) == 0 && Traits::field_cmp(p1.y, p2.y) == 0) {
+        point_double(result, p1);
+        return;
+    }
+    
+    // Standard addition: lambda = (y2 - y1) / (x2 - x1)
+    FieldType dx, dy, lambda, lambda_squared, x_result;
+    Traits::field_sub(dx, p2.x, p1.x);
+    Traits::field_sub(dy, p2.y, p1.y);
+    Traits::field_inv(lambda, dx);  // 1 / (x2 - x1)
+    Traits::field_mul(lambda, lambda, dy);  // (y2 - y1) / (x2 - x1)
+    
+    // x_result = lambda^2 - x1 - x2
+    Traits::field_mul(lambda_squared, lambda, lambda);
+    Traits::field_sub(x_result, lambda_squared, p1.x);
+    Traits::field_sub(x_result, x_result, p2.x);
+    
+    // y_result = lambda * (x1 - x_result) - y1
+    FieldType x1_minus_xr, y_result;
+    Traits::field_sub(x1_minus_xr, p1.x, x_result);
+    Traits::field_mul(y_result, lambda, x1_minus_xr);
+    Traits::field_sub(y_result, y_result, p1.y);
+    
+    Traits::field_copy(result.x, x_result);
+    Traits::field_copy(result.y, y_result);
+    result.infinity = false;
+}
+
+// Generic scalar multiplication: result = scalar * point
+template<typename PointType>
+__host__ __device__ void point_scalar_mul(PointType& result, const PointType& point, const uint64_t* scalar, int scalar_limbs) {
+    using Traits = PointTraits<PointType>;
+    
+    // Start with point at infinity
+    Traits::point_at_infinity(result);
+    
+    if (Traits::is_infinity(point)) {
+        return;
+    }
+    
+    // Check if scalar is zero
+    bool all_zero = true;
+    for (int i = 0; i < scalar_limbs; i++) {
+        if (scalar[i] != 0) {
+            all_zero = false;
+            break;
+        }
+    }
+    if (all_zero) {
+        return;
+    }
+    
+    PointType current;
+    Traits::field_copy(current.x, point.x);
+    Traits::field_copy(current.y, point.y);
+    current.infinity = point.infinity;
+    
+    // Process bits from MSB to LSB
+    for (int limb = scalar_limbs - 1; limb >= 0; limb--) {
+        for (int bit = 63; bit >= 0; bit--) {
+            point_double(result, result);
+            
+            if ((scalar[limb] >> bit) & 1) {
+                point_add(result, result, current);
+            }
+        }
+    }
+}
+
 // Curve parameters for BLS12-446
 // G1 curve: y^2 = x^3 + b
 // G2 curve: y^2 = x^3 + b' where b' = b * ξ (ξ is a non-residue in Fp2)
@@ -151,149 +353,27 @@ __host__ __device__ bool g2_is_infinity(const G2Point& point) {
 }
 
 // ============================================================================
-// G1 Point Operations
+// G1 Point Operations (using templates)
 // ============================================================================
 
 // Point negation: result = -p = (x, -y)
 __host__ __device__ void g1_neg(G1Point& result, const G1Point& p) {
-    if (g1_is_infinity(p)) {
-        g1_point_at_infinity(result);
-        return;
-    }
-    fp_copy(result.x, p.x);
-    fp_neg(result.y, p.y);
-    result.infinity = false;
+    point_neg(result, p);
 }
 
 // Point doubling: result = 2 * p
-// Using the standard formula for doubling on y^2 = x^3 + b
-// lambda = 3*x^2 / (2*y) = (3*x^2) * (2*y)^(-1)
-// x_result = lambda^2 - 2*x
-// y_result = lambda*(x - x_result) - y
 __host__ __device__ void g1_double(G1Point& result, const G1Point& p) {
-    if (g1_is_infinity(p) || fp_is_zero(p.y)) {
-        g1_point_at_infinity(result);
-        return;
-    }
-    
-    // Compute lambda = 3*x^2 / (2*y)
-    Fp x_squared, three_x_squared, two_y, lambda;
-    fp_mul(x_squared, p.x, p.x);
-    fp_add(three_x_squared, x_squared, x_squared);  // 2*x^2
-    fp_add(three_x_squared, three_x_squared, x_squared);  // 3*x^2
-    
-    fp_add(two_y, p.y, p.y);  // 2*y
-    fp_inv(lambda, two_y);  // 1/(2*y)
-    fp_mul(lambda, lambda, three_x_squared);  // 3*x^2 / (2*y)
-    
-    // x_result = lambda^2 - 2*x
-    Fp lambda_squared, two_x, x_result;
-    fp_mul(lambda_squared, lambda, lambda);
-    fp_add(two_x, p.x, p.x);  // 2*x
-    fp_sub(x_result, lambda_squared, two_x);
-    
-    // y_result = lambda*(x - x_result) - y
-    Fp x_minus_xr, y_result;
-    fp_sub(x_minus_xr, p.x, x_result);
-    fp_mul(y_result, lambda, x_minus_xr);
-    fp_sub(y_result, y_result, p.y);
-    
-    fp_copy(result.x, x_result);
-    fp_copy(result.y, y_result);
-    result.infinity = false;
+    point_double(result, p);
 }
 
 // Point addition: result = p1 + p2
-// Using the standard elliptic curve addition formula
 __host__ __device__ void g1_add(G1Point& result, const G1Point& p1, const G1Point& p2) {
-    // Handle infinity cases
-    if (g1_is_infinity(p1)) {
-        fp_copy(result.x, p2.x);
-        fp_copy(result.y, p2.y);
-        result.infinity = p2.infinity;
-        return;
-    }
-    if (g1_is_infinity(p2)) {
-        fp_copy(result.x, p1.x);
-        fp_copy(result.y, p1.y);
-        result.infinity = p1.infinity;
-        return;
-    }
-    
-    // Check if p1 == -p2 (same x, opposite y)
-    Fp neg_y2;
-    fp_neg(neg_y2, p2.y);
-    if (fp_cmp(p1.x, p2.x) == 0 && fp_cmp(p1.y, neg_y2) == 0) {
-        g1_point_at_infinity(result);
-        return;
-    }
-    
-    // Check if p1 == p2 (use doubling)
-    if (fp_cmp(p1.x, p2.x) == 0 && fp_cmp(p1.y, p2.y) == 0) {
-        g1_double(result, p1);
-        return;
-    }
-    
-    // Standard addition: lambda = (y2 - y1) / (x2 - x1)
-    Fp dx, dy, lambda, lambda_squared, x_result;
-    fp_sub(dx, p2.x, p1.x);
-    fp_sub(dy, p2.y, p1.y);
-    fp_inv(lambda, dx);  // 1 / (x2 - x1)
-    fp_mul(lambda, lambda, dy);  // (y2 - y1) / (x2 - x1)
-    
-    // x_result = lambda^2 - x1 - x2
-    fp_mul(lambda_squared, lambda, lambda);
-    fp_sub(x_result, lambda_squared, p1.x);
-    fp_sub(x_result, x_result, p2.x);
-    
-    // y_result = lambda * (x1 - x_result) - y1
-    Fp x1_minus_xr, y_result;
-    fp_sub(x1_minus_xr, p1.x, x_result);
-    fp_mul(y_result, lambda, x1_minus_xr);
-    fp_sub(y_result, y_result, p1.y);
-    
-    fp_copy(result.x, x_result);
-    fp_copy(result.y, y_result);
-    result.infinity = false;
+    point_add(result, p1, p2);
 }
 
 // Scalar multiplication: result = scalar * point
-// Uses binary method (double-and-add)
 __host__ __device__ void g1_scalar_mul(G1Point& result, const G1Point& point, const uint64_t* scalar, int scalar_limbs) {
-    // Start with point at infinity
-    g1_point_at_infinity(result);
-    
-    if (g1_is_infinity(point)) {
-        return;
-    }
-    
-    // Check if scalar is zero
-    bool all_zero = true;
-    for (int i = 0; i < scalar_limbs; i++) {
-        if (scalar[i] != 0) {
-            all_zero = false;
-            break;
-        }
-    }
-    if (all_zero) {
-        return;
-    }
-    
-    G1Point current;
-    fp_copy(current.x, point.x);
-    fp_copy(current.y, point.y);
-    current.infinity = point.infinity;
-    
-    // Process bits from MSB to LSB
-    for (int limb = scalar_limbs - 1; limb >= 0; limb--) {
-        for (int bit = 63; bit >= 0; bit--) {
-            g1_double(result, result);
-            
-            if ((scalar[limb] >> bit) & 1) {
-                g1_add(result, result, current);
-            }
-        }
-    }
+    point_scalar_mul(result, point, scalar, scalar_limbs);
 }
 
 // Scalar multiplication with 64-bit scalar
@@ -302,144 +382,27 @@ __host__ __device__ void g1_scalar_mul_u64(G1Point& result, const G1Point& point
 }
 
 // ============================================================================
-// G2 Point Operations
+// G2 Point Operations (using templates)
 // ============================================================================
 
 // Point negation: result = -p = (x, -y)
 __host__ __device__ void g2_neg(G2Point& result, const G2Point& p) {
-    if (g2_is_infinity(p)) {
-        g2_point_at_infinity(result);
-        return;
-    }
-    fp2_copy(result.x, p.x);
-    fp2_neg(result.y, p.y);
-    result.infinity = false;
+    point_neg(result, p);
 }
 
 // Point doubling: result = 2 * p
-// Using the standard formula for doubling on y^2 = x^3 + b'
 __host__ __device__ void g2_double(G2Point& result, const G2Point& p) {
-    if (g2_is_infinity(p) || fp2_is_zero(p.y)) {
-        g2_point_at_infinity(result);
-        return;
-    }
-    
-    // Compute lambda = 3*x^2 / (2*y)
-    Fp2 x_squared, three_x_squared, two_y, lambda;
-    fp2_mul(x_squared, p.x, p.x);
-    fp2_add(three_x_squared, x_squared, x_squared);  // 2*x^2
-    fp2_add(three_x_squared, three_x_squared, x_squared);  // 3*x^2
-    
-    fp2_add(two_y, p.y, p.y);  // 2*y
-    fp2_inv(lambda, two_y);  // 1/(2*y)
-    fp2_mul(lambda, lambda, three_x_squared);  // 3*x^2 / (2*y)
-    
-    // x_result = lambda^2 - 2*x
-    Fp2 lambda_squared, two_x, x_result;
-    fp2_mul(lambda_squared, lambda, lambda);
-    fp2_add(two_x, p.x, p.x);  // 2*x
-    fp2_sub(x_result, lambda_squared, two_x);
-    
-    // y_result = lambda*(x - x_result) - y
-    Fp2 x_minus_xr, y_result;
-    fp2_sub(x_minus_xr, p.x, x_result);
-    fp2_mul(y_result, lambda, x_minus_xr);
-    fp2_sub(y_result, y_result, p.y);
-    
-    fp2_copy(result.x, x_result);
-    fp2_copy(result.y, y_result);
-    result.infinity = false;
+    point_double(result, p);
 }
 
 // Point addition: result = p1 + p2
 __host__ __device__ void g2_add(G2Point& result, const G2Point& p1, const G2Point& p2) {
-    // Handle infinity cases
-    if (g2_is_infinity(p1)) {
-        fp2_copy(result.x, p2.x);
-        fp2_copy(result.y, p2.y);
-        result.infinity = p2.infinity;
-        return;
-    }
-    if (g2_is_infinity(p2)) {
-        fp2_copy(result.x, p1.x);
-        fp2_copy(result.y, p1.y);
-        result.infinity = p1.infinity;
-        return;
-    }
-    
-    // Check if p1 == -p2 (same x, opposite y)
-    Fp2 neg_y2;
-    fp2_neg(neg_y2, p2.y);
-    if (fp2_cmp(p1.x, p2.x) == 0 && fp2_cmp(p1.y, neg_y2) == 0) {
-        g2_point_at_infinity(result);
-        return;
-    }
-    
-    // Check if p1 == p2 (use doubling)
-    if (fp2_cmp(p1.x, p2.x) == 0 && fp2_cmp(p1.y, p2.y) == 0) {
-        g2_double(result, p1);
-        return;
-    }
-    
-    // Standard addition: lambda = (y2 - y1) / (x2 - x1)
-    Fp2 dx, dy, lambda, lambda_squared, x_result;
-    fp2_sub(dx, p2.x, p1.x);
-    fp2_sub(dy, p2.y, p1.y);
-    fp2_inv(lambda, dx);  // 1 / (x2 - x1)
-    fp2_mul(lambda, lambda, dy);  // (y2 - y1) / (x2 - x1)
-    
-    // x_result = lambda^2 - x1 - x2
-    fp2_mul(lambda_squared, lambda, lambda);
-    fp2_sub(x_result, lambda_squared, p1.x);
-    fp2_sub(x_result, x_result, p2.x);
-    
-    // y_result = lambda * (x1 - x_result) - y1
-    Fp2 x1_minus_xr, y_result;
-    fp2_sub(x1_minus_xr, p1.x, x_result);
-    fp2_mul(y_result, lambda, x1_minus_xr);
-    fp2_sub(y_result, y_result, p1.y);
-    
-    fp2_copy(result.x, x_result);
-    fp2_copy(result.y, y_result);
-    result.infinity = false;
+    point_add(result, p1, p2);
 }
 
 // Scalar multiplication: result = scalar * point
 __host__ __device__ void g2_scalar_mul(G2Point& result, const G2Point& point, const uint64_t* scalar, int scalar_limbs) {
-    // Start with point at infinity
-    g2_point_at_infinity(result);
-    
-    if (g2_is_infinity(point)) {
-        return;
-    }
-    
-    // Check if scalar is zero
-    bool all_zero = true;
-    for (int i = 0; i < scalar_limbs; i++) {
-        if (scalar[i] != 0) {
-            all_zero = false;
-            break;
-        }
-    }
-    if (all_zero) {
-        return;
-    }
-    
-    G2Point current;
-    fp2_copy(current.x, point.x);
-    fp2_copy(current.y, point.y);
-    current.infinity = point.infinity;
-    
-    // Process bits from MSB to LSB
-    for (int limb = scalar_limbs - 1; limb >= 0; limb--) {
-        for (int bit = 63; bit >= 0; bit--) {
-            g2_double(result, result);
-            
-            if ((scalar[limb] >> bit) & 1) {
-                g2_add(result, result, current);
-            }
-        }
-    }
+    point_scalar_mul(result, point, scalar, scalar_limbs);
 }
 
 // Scalar multiplication with 64-bit scalar
@@ -573,9 +536,62 @@ __host__ __device__ const G2Point& g2_generator() {
 // Multi-Scalar Multiplication (MSM)
 // ============================================================================
 
-// CUDA kernels for MSM operations
+// Template CUDA kernels for MSM operations
 
-// Kernel: Compute scalar[i] * points[i] for G1 with 64-bit scalars
+// Template kernel: Compute scalar[i] * points[i] with 64-bit scalars
+template<typename PointType>
+__global__ void kernel_scalar_mul_u64_array(
+    PointType* results,
+    const PointType* points,
+    const uint64_t* scalars,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        point_scalar_mul(results[idx], points[idx], &scalars[idx], 1);
+    }
+}
+
+// Template kernel: Compute scalar[i] * points[i] with multi-limb scalars
+template<typename PointType>
+__global__ void kernel_scalar_mul_array(
+    PointType* results,
+    const PointType* points,
+    const uint64_t* scalars,
+    int scalar_limbs,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        point_scalar_mul(results[idx], points[idx], scalars + idx * scalar_limbs, scalar_limbs);
+    }
+}
+
+// Template kernel: Reduce array of points by addition
+template<typename PointType>
+__global__ void kernel_reduce_sum(
+    PointType* result,
+    const PointType* points,
+    int n
+) {
+    using Traits = PointTraits<PointType>;
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        Traits::point_at_infinity(*result);
+        for (int i = 0; i < n; i++) {
+            PointType temp;
+            point_add(temp, *result, points[i]);
+            Traits::field_copy(result->x, temp.x);
+            Traits::field_copy(result->y, temp.y);
+            result->infinity = temp.infinity;
+        }
+    }
+}
+
+// Non-template wrappers for backward compatibility
+// These are thin wrappers that call the template kernels
+// Note: We can't launch kernels from kernels, so these just duplicate the logic
+// but they call the template point functions which are now shared
+
 __global__ void kernel_g1_scalar_mul_u64_array(
     G1Point* results,
     const G1Point* points,
@@ -588,7 +604,6 @@ __global__ void kernel_g1_scalar_mul_u64_array(
     }
 }
 
-// Kernel: Compute scalar[i] * points[i] for G1 with multi-limb scalars
 __global__ void kernel_g1_scalar_mul_array(
     G1Point* results,
     const G1Point* points,
@@ -602,7 +617,6 @@ __global__ void kernel_g1_scalar_mul_array(
     }
 }
 
-// Kernel: Compute scalar[i] * points[i] for G2 with 64-bit scalars
 __global__ void kernel_g2_scalar_mul_u64_array(
     G2Point* results,
     const G2Point* points,
@@ -615,7 +629,6 @@ __global__ void kernel_g2_scalar_mul_u64_array(
     }
 }
 
-// Kernel: Compute scalar[i] * points[i] for G2 with multi-limb scalars
 __global__ void kernel_g2_scalar_mul_array(
     G2Point* results,
     const G2Point* points,
@@ -629,15 +642,11 @@ __global__ void kernel_g2_scalar_mul_array(
     }
 }
 
-// Kernel: Reduce array of G1 points by addition (tree reduction)
-// This is a simple sequential reduction - can be optimized with parallel reduction later
 __global__ void kernel_g1_reduce_sum(
     G1Point* result,
     const G1Point* points,
     int n
 ) {
-    // For now, use a simple approach: first thread does sequential reduction
-    // This can be optimized with proper parallel reduction later
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         g1_point_at_infinity(*result);
         for (int i = 0; i < n; i++) {
@@ -650,7 +659,6 @@ __global__ void kernel_g1_reduce_sum(
     }
 }
 
-// Kernel: Reduce array of G2 points by addition
 __global__ void kernel_g2_reduce_sum(
     G2Point* result,
     const G2Point* points,
@@ -1058,6 +1066,13 @@ void g2_scalar_mul(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, c
 // Refactored MSM API (device pointers only, no allocations/copies/frees)
 // ============================================================================
 
+// Template MSM functions (shared implementation for G1 and G2)
+// These require helper functions to get the right point_at_infinity_async function
+// For now, we'll keep the g1/g2 specific versions but they can call template kernels
+
+// Helper to get point_at_infinity_async function pointer - we'll use function overloading instead
+// Actually, let's just keep the implementations separate but use template kernels
+
 // G1 MSM with 64-bit scalars - async version
 void g1_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1Point* d_scratch, int n) {
     if (n == 0) {
@@ -1070,14 +1085,14 @@ void g1_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result
     
     cuda_set_device(gpu_index);
     
-    // Launch kernel to compute scalar[i] * points[i] for each i
+    // Launch template kernel
     int threadsPerBlock = 256;
     int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_g1_scalar_mul_u64_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, n);
+    kernel_scalar_mul_u64_array<G1Point><<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, n);
     check_cuda_error(cudaGetLastError());
     
-    // Reduce sum directly into result (uses async g1_add internally)
-    kernel_g1_reduce_sum<<<1, 1, 0, stream>>>(d_result, d_scratch, n);
+    // Reduce sum directly into result
+    kernel_reduce_sum<G1Point><<<1, 1, 0, stream>>>(d_result, d_scratch, n);
     check_cuda_error(cudaGetLastError());
 }
 
@@ -1098,14 +1113,14 @@ void g1_msm_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, co
     
     cuda_set_device(gpu_index);
     
-    // Launch kernel to compute scalar[i] * points[i] for each i
+    // Launch template kernel
     int threadsPerBlock = 256;
     int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_g1_scalar_mul_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, scalar_limbs, n);
+    kernel_scalar_mul_array<G1Point><<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, scalar_limbs, n);
     check_cuda_error(cudaGetLastError());
     
     // Reduce sum directly into result
-    kernel_g1_reduce_sum<<<1, 1, 0, stream>>>(d_result, d_scratch, n);
+    kernel_reduce_sum<G1Point><<<1, 1, 0, stream>>>(d_result, d_scratch, n);
     check_cuda_error(cudaGetLastError());
 }
 
@@ -1126,14 +1141,14 @@ void g2_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result
     
     cuda_set_device(gpu_index);
     
-    // Launch kernel to compute scalar[i] * points[i] for each i
+    // Launch template kernel
     int threadsPerBlock = 256;
     int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_g2_scalar_mul_u64_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, n);
+    kernel_scalar_mul_u64_array<G2Point><<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, n);
     check_cuda_error(cudaGetLastError());
     
     // Reduce sum directly into result
-    kernel_g2_reduce_sum<<<1, 1, 0, stream>>>(d_result, d_scratch, n);
+    kernel_reduce_sum<G2Point><<<1, 1, 0, stream>>>(d_result, d_scratch, n);
     check_cuda_error(cudaGetLastError());
 }
 
@@ -1154,14 +1169,14 @@ void g2_msm_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, co
     
     cuda_set_device(gpu_index);
     
-    // Launch kernel to compute scalar[i] * points[i] for each i
+    // Launch template kernel
     int threadsPerBlock = 256;
     int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_g2_scalar_mul_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, scalar_limbs, n);
+    kernel_scalar_mul_array<G2Point><<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, scalar_limbs, n);
     check_cuda_error(cudaGetLastError());
     
     // Reduce sum directly into result
-    kernel_g2_reduce_sum<<<1, 1, 0, stream>>>(d_result, d_scratch, n);
+    kernel_reduce_sum<G2Point><<<1, 1, 0, stream>>>(d_result, d_scratch, n);
     check_cuda_error(cudaGetLastError());
 }
 
