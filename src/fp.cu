@@ -1,4 +1,5 @@
 #include "fp.h"
+#include "device.h"
 #include <cstring>
 #include <cstdio>
 
@@ -69,11 +70,7 @@ static uint64_t get_host_p_prime() {
 // gpu_index: GPU device index to use
 void init_device_modulus(cudaStream_t stream, uint32_t gpu_index) {
     // Set the device context
-    cudaError_t err = cudaSetDevice(gpu_index);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Error setting device %u: %s\n", gpu_index, cudaGetErrorString(err));
-        return;
-    }
+    cuda_set_device(gpu_index);
     
     Fp host_mod = get_host_modulus();
     Fp host_r2 = get_host_r2();
@@ -82,36 +79,14 @@ void init_device_modulus(cudaStream_t stream, uint32_t gpu_index) {
     
     // Note: cudaMemcpyToSymbolAsync doesn't exist for __constant__ memory
     // We must use synchronous cudaMemcpyToSymbol, but we ensure the device is set correctly
-    err = cudaMemcpyToSymbol(DEVICE_MODULUS, &host_mod, sizeof(Fp));
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device modulus on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
-        return;
-    }
-    
-    err = cudaMemcpyToSymbol(DEVICE_R2, &host_r2, sizeof(Fp));
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device R2 on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
-        return;
-    }
-    
-    err = cudaMemcpyToSymbol(DEVICE_R_INV, &host_r_inv, sizeof(Fp));
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device R_INV on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
-        return;
-    }
-    
-    err = cudaMemcpyToSymbol(DEVICE_P_PRIME, &host_p_prime, sizeof(uint64_t));
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device P_PRIME on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
-        return;
-    }
+    check_cuda_error(cudaMemcpyToSymbol(DEVICE_MODULUS, &host_mod, sizeof(Fp)));
+    check_cuda_error(cudaMemcpyToSymbol(DEVICE_R2, &host_r2, sizeof(Fp)));
+    check_cuda_error(cudaMemcpyToSymbol(DEVICE_R_INV, &host_r_inv, sizeof(Fp)));
+    check_cuda_error(cudaMemcpyToSymbol(DEVICE_P_PRIME, &host_p_prime, sizeof(uint64_t)));
     
     // Synchronize stream to ensure completion
     if (stream != nullptr) {
-        err = cudaStreamSynchronize(stream);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "Error synchronizing stream on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
-        }
+        cuda_synchronize_stream(stream, gpu_index);
     }
 }
 

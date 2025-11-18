@@ -2,6 +2,7 @@
 #include "fp2_kernels.h"
 #include "fp.h"
 #include "curve.h"
+#include "device.h"
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 #include <cstdint>
@@ -87,13 +88,11 @@ protected:
     static void SetUpTestSuite() {
         // Use GPU 0 by default
         gpu_index = 0;
+        cuda_set_device(gpu_index);
         
         // Create a CUDA stream
-        cudaError_t err = cudaStreamCreate(&stream);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "Failed to create CUDA stream: %s\n", cudaGetErrorString(err));
-            stream = nullptr;
-        }
+        stream = cuda_create_stream(gpu_index);
+        PANIC_IF_FALSE(stream != nullptr, "Failed to create CUDA stream");
         
         // Initialize device modulus once for all tests
         init_device_modulus(stream, gpu_index);
@@ -103,7 +102,7 @@ protected:
     
     static void TearDownTestSuite() {
         if (stream != nullptr) {
-            cudaStreamDestroy(stream);
+            cuda_destroy_stream(stream, gpu_index);
             stream = nullptr;
         }
     }
@@ -148,12 +147,6 @@ protected:
         rng.seed(42);  // Fixed seed for reproducibility
     }
     
-    // Helper to check CUDA errors
-    void checkCudaError(cudaError_t err, const char* msg) {
-        if (err != cudaSuccess) {
-            FAIL() << msg << ": " << cudaGetErrorString(err);
-        }
-    }
 };
 
 // ============================================================================
@@ -170,8 +163,7 @@ TEST_F(Fp2ArithmeticTest, Addition) {
     
     // Test on GPU
     fp2_add_gpu(&c, &a, &b);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_add(c_cpu, a, b);
@@ -194,8 +186,7 @@ TEST_F(Fp2ArithmeticTest, Subtraction) {
     
     // Test on GPU
     fp2_sub_gpu(&a, &c, &b);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_sub(a_cpu, c, b);
@@ -216,8 +207,7 @@ TEST_F(Fp2ArithmeticTest, Multiplication) {
     
     // Test on GPU
     fp2_mul_gpu(&result, &a, &b);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_mul(result_cpu, a, b);
@@ -242,8 +232,7 @@ TEST_F(Fp2ArithmeticTest, I_Squared) {
     
     // i * i = -1 (on GPU)
     fp2_mul_gpu(&result, &i_val, &i_val);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_mul(result_cpu, i_val, i_val);
@@ -266,12 +255,10 @@ TEST_F(Fp2ArithmeticTest, Negation) {
     
     // Test on GPU
     fp2_neg_gpu(&neg_a, &a);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     fp2_add_gpu(&result, &a, &neg_a);
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_neg(neg_a_cpu, a);
@@ -290,12 +277,10 @@ TEST_F(Fp2ArithmeticTest, Conjugation) {
     
     // Test on GPU
     fp2_conjugate_gpu(&conj, &a);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     fp2_mul_gpu(&result, &a, &conj);
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_conjugate(conj_cpu, a);
@@ -323,8 +308,7 @@ TEST_F(Fp2ArithmeticTest, Squaring) {
     
     // Test on GPU
     fp2_square_gpu(&square, &a);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_square(square_cpu, a);
@@ -345,20 +329,16 @@ TEST_F(Fp2ArithmeticTest, ZeroAndOne) {
     
     // Test on GPU
     EXPECT_TRUE(fp2_is_zero_gpu(&zero_val));
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     EXPECT_FALSE(fp2_is_zero_gpu(&one_val));
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     EXPECT_TRUE(fp2_is_one_gpu(&one_val));
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     EXPECT_FALSE(fp2_is_one_gpu(&zero_val));
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
 }
 
 // Test copy (on GPU)
@@ -369,8 +349,7 @@ TEST_F(Fp2ArithmeticTest, Copy) {
     
     // Test on GPU
     fp2_copy_gpu(&b, &a);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_copy(b_cpu, a);
@@ -390,11 +369,9 @@ TEST_F(Fp2ArithmeticTest, ConditionalMove) {
     
     // Test move when condition is true (1) (on GPU)
     fp2_copy_gpu(&result, &a);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     fp2_cmov_gpu(&result, &b, 1);
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_copy(result_cpu, a);
@@ -407,11 +384,9 @@ TEST_F(Fp2ArithmeticTest, ConditionalMove) {
     
     // Test no move when condition is false (0) (on GPU)
     fp2_copy_gpu(&result, &a);
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     fp2_cmov_gpu(&result, &b, 0);
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_copy(result_cpu, a);
@@ -432,15 +407,13 @@ TEST_F(Fp2ArithmeticTest, MultiplicationByZero) {
     
     // Test on GPU
     fp2_mul_gpu(&result, &a, &zero_val);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_mul(result_cpu, a, zero_val);
     
     EXPECT_TRUE(fp2_is_zero_gpu(&result));
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     // Verify GPU result matches CPU result
     EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
@@ -453,12 +426,10 @@ TEST_F(Fp2ArithmeticTest, Inversion) {
     
     // Test on GPU
     fp2_inv_gpu(&a_inv, &a);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     fp2_mul_gpu(&result, &a, &a_inv);
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_inv(a_inv_cpu, a);
@@ -479,12 +450,10 @@ TEST_F(Fp2ArithmeticTest, Division) {
     
     // Test on GPU
     fp2_div_gpu(&quotient, &a, &b);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     fp2_mul_gpu(&result, &quotient, &b);
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_div(quotient_cpu, a, b);
@@ -506,8 +475,7 @@ TEST_F(Fp2ArithmeticTest, MultiplyByI) {
     
     // Test on GPU
     fp2_mul_by_i_gpu(&result, &a);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_mul_by_i(result_cpu, a);
@@ -532,12 +500,10 @@ TEST_F(Fp2ArithmeticTest, Frobenius) {
     
     // Test on GPU
     fp2_frobenius_gpu(&frob, &a);
-    cudaError_t err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     fp2_conjugate_gpu(&conj, &a);
-    err = cudaDeviceSynchronize();
-    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    cuda_synchronize_device(gpu_index);
     
     // Also test on CPU for comparison
     fp2_frobenius(frob_cpu, a);
@@ -567,19 +533,16 @@ TEST_F(Fp2PropertyTest, AdditionAssociativity) {
         // (a + b) + c (on GPU)
         fp2_add_gpu(&temp, &a, &b);
         fp2_add_gpu(&result1, &temp, &c);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         // a + (b + c) (on GPU)
         fp2_add_gpu(&temp, &b, &c);
         fp2_add_gpu(&result2, &a, &temp);
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
             << "Addition associativity failed: (a+b)+c != a+(b+c)";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -595,19 +558,16 @@ TEST_F(Fp2PropertyTest, MultiplicationAssociativity) {
         // (a * b) * c (on GPU)
         fp2_mul_gpu(&temp, &a, &b);
         fp2_mul_gpu(&result1, &temp, &c);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         // a * (b * c) (on GPU)
         fp2_mul_gpu(&temp, &b, &c);
         fp2_mul_gpu(&result2, &a, &temp);
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
             << "Multiplication associativity failed: (a*b)*c != a*(b*c)";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -623,20 +583,17 @@ TEST_F(Fp2PropertyTest, MultiplicationDistributivity) {
         // a * (b + c) (on GPU)
         fp2_add_gpu(&temp1, &b, &c);
         fp2_mul_gpu(&result1, &a, &temp1);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         // a*b + a*c (on GPU)
         fp2_mul_gpu(&temp1, &a, &b);
         fp2_mul_gpu(&temp2, &a, &c);
         fp2_add_gpu(&result2, &temp1, &temp2);
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
             << "Distributivity failed: a*(b+c) != a*b + a*c";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -649,13 +606,11 @@ TEST_F(Fp2PropertyTest, AdditionCommutativity) {
         Fp2 result1, result2;
         fp2_add_gpu(&result1, &a, &b);
         fp2_add_gpu(&result2, &b, &a);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
             << "Addition commutativity failed: a+b != b+a";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -668,13 +623,11 @@ TEST_F(Fp2PropertyTest, MultiplicationCommutativity) {
         Fp2 result1, result2;
         fp2_mul_gpu(&result1, &a, &b);
         fp2_mul_gpu(&result2, &b, &a);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
             << "Multiplication commutativity failed: a*b != b*a";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -685,12 +638,10 @@ TEST_F(Fp2PropertyTest, AdditiveIdentity) {
         Fp2 result;
         
         fp2_add_gpu(&result, &a, &zero);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_EQ(fp2_cmp_gpu(&result, &a), 0) << "Additive identity failed: a + 0 != a";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -701,12 +652,10 @@ TEST_F(Fp2PropertyTest, MultiplicativeIdentity) {
         Fp2 result;
         
         fp2_mul_gpu(&result, &a, &one);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_EQ(fp2_cmp_gpu(&result, &a), 0) << "Multiplicative identity failed: a * 1 != a";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -718,12 +667,10 @@ TEST_F(Fp2PropertyTest, AdditiveInverse) {
         
         fp2_neg_gpu(&neg_a, &a);
         fp2_add_gpu(&result, &a, &neg_a);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_TRUE(fp2_is_zero_gpu(&result)) << "Additive inverse failed: a + (-a) != 0";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -738,12 +685,10 @@ TEST_F(Fp2PropertyTest, MultiplicativeInverse) {
         
         fp2_inv_gpu(&a_inv, &a);
         fp2_mul_gpu(&result, &a, &a_inv);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_TRUE(fp2_is_one_gpu(&result)) << "Multiplicative inverse failed: a * a^(-1) != 1";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -755,13 +700,11 @@ TEST_F(Fp2PropertyTest, SquareVsMultiply) {
         Fp2 square, multiply;
         fp2_square_gpu(&square, &a);
         fp2_mul_gpu(&multiply, &a, &a);
-        cudaError_t err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
         
         EXPECT_EQ(fp2_cmp_gpu(&square, &multiply), 0) 
             << "Square vs multiply failed: a^2 != a*a";
-        err = cudaDeviceSynchronize();
-        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        cuda_synchronize_device(gpu_index);
     }
 }
 
@@ -789,8 +732,7 @@ TEST_F(Fp2CudaKernelTest, CudaKernelArrayAdd) {
     fp2_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
     
     // Check CUDA errors (stream is already synchronized in fp2_add_array_host)
-    cudaError_t err = cudaStreamSynchronize(stream);
-    checkCudaError(err, "CUDA kernel execution failed");
+    cuda_synchronize_stream(stream, gpu_index);
     
     // Verify results match host computation
     for (int i = 0; i < n; i++) {
@@ -826,8 +768,7 @@ TEST_F(Fp2CudaKernelTest, CudaKernelArrayMul) {
     fp2_mul_array_host(stream, gpu_index, h_c, h_a, h_b, n);
     
     // Check CUDA errors (stream is already synchronized in fp2_mul_array_host)
-    cudaError_t err = cudaStreamSynchronize(stream);
-    checkCudaError(err, "CUDA kernel execution failed");
+    cuda_synchronize_stream(stream, gpu_index);
     
     // Verify results match host computation
     for (int i = 0; i < n; i++) {

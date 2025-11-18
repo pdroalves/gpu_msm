@@ -1,6 +1,7 @@
 #include "curve.h"
 #include "fp.h"
 #include "fp2.h"
+#include "device.h"
 #include <cstring>
 #include <cstdio>
 
@@ -39,35 +40,19 @@ __constant__ Fp2 DEVICE_CURVE_B_G2;
 // gpu_index: GPU device index to use
 void init_device_curve(cudaStream_t stream, uint32_t gpu_index) {
     // Set the device context
-    cudaError_t err = cudaSetDevice(gpu_index);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Error setting device %u: %s\n", gpu_index, cudaGetErrorString(err));
-        return;
-    }
+    cuda_set_device(gpu_index);
     
     Fp host_b_g1 = get_host_curve_b_g1();
     Fp2 host_b_g2 = get_host_curve_b_g2();
     
     // Note: cudaMemcpyToSymbolAsync doesn't exist for __constant__ memory
     // We must use synchronous cudaMemcpyToSymbol, but we ensure the device is set correctly
-    err = cudaMemcpyToSymbol(DEVICE_CURVE_B_G1, &host_b_g1, sizeof(Fp));
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device curve b_g1 on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
-        return;
-    }
-    
-    err = cudaMemcpyToSymbol(DEVICE_CURVE_B_G2, &host_b_g2, sizeof(Fp2));
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device curve b_g2 on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
-        return;
-    }
+    check_cuda_error(cudaMemcpyToSymbol(DEVICE_CURVE_B_G1, &host_b_g1, sizeof(Fp)));
+    check_cuda_error(cudaMemcpyToSymbol(DEVICE_CURVE_B_G2, &host_b_g2, sizeof(Fp2)));
     
     // Synchronize stream to ensure completion
     if (stream != nullptr) {
-        err = cudaStreamSynchronize(stream);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "Error synchronizing stream on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
-        }
+        cuda_synchronize_stream(stream, gpu_index);
     }
 }
 

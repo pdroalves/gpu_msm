@@ -1,21 +1,9 @@
 #include "fp2.h"
 #include "fp2_kernels.h"
+#include "device.h"
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
-
-// Helper function to check CUDA errors
-static void checkCudaError(cudaError_t err, const char* file, int line, const char* func) {
-    if (err != cudaSuccess) {
-        fprintf(stderr, "CUDA error at %s:%d in %s: %s\n", 
-                file, line, func, cudaGetErrorString(err));
-        fflush(stderr);
-        // Don't abort in library code - let caller handle it
-    }
-}
-
-// Macro to check CUDA errors with context
-#define CHECK_CUDA(err) checkCudaError(err, __FILE__, __LINE__, __FUNCTION__)
 
 // Kernel: Add two arrays of Fp2 elements
 // a[i] + b[i] -> c[i] for all i
@@ -126,22 +114,14 @@ __global__ void kernel_test_fp2_cmov(Fp2* result, const Fp2* src, uint64_t condi
 // Host wrapper functions
 void fp2_add_array_host(cudaStream_t stream, uint32_t gpu_index, Fp2* c, const Fp2* a, const Fp2* b, int n) {
     // Validate inputs
-    if (n < 0) {
-        fprintf(stderr, "fp2_add_array_host: invalid size n=%d\n", n);
-        return;
-    }
+    PANIC_IF_FALSE(n >= 0, "fp2_add_array_host: invalid size n=%d", n);
     if (n == 0) {
         return;  // Nothing to do
     }
-    if (c == nullptr || a == nullptr || b == nullptr) {
-        fprintf(stderr, "fp2_add_array_host: null pointer argument\n");
-        return;
-    }
+    PANIC_IF_FALSE(c != nullptr && a != nullptr && b != nullptr, "fp2_add_array_host: null pointer argument");
     
     // Set the device context
-    cudaError_t err = cudaSetDevice(gpu_index);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) return;
+    cuda_set_device(gpu_index);
     
     // Declare all variables at the top to avoid goto issues
     Fp2 *d_c = nullptr, *d_a = nullptr, *d_b = nullptr;
@@ -149,76 +129,49 @@ void fp2_add_array_host(cudaStream_t stream, uint32_t gpu_index, Fp2* c, const F
     int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
     
     // Allocate device memory (asynchronous with stream)
-    err = cudaMallocAsync(&d_c, n * sizeof(Fp2), stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMallocAsync(&d_a, n * sizeof(Fp2), stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMallocAsync(&d_b, n * sizeof(Fp2), stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_c = (Fp2*)cuda_malloc_async(n * sizeof(Fp2), stream, gpu_index);
+    d_a = (Fp2*)cuda_malloc_async(n * sizeof(Fp2), stream, gpu_index);
+    d_b = (Fp2*)cuda_malloc_async(n * sizeof(Fp2), stream, gpu_index);
     
     // Copy to device (asynchronous with stream)
-    err = cudaMemcpyAsync(d_a, a, n * sizeof(Fp2), cudaMemcpyHostToDevice, stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpyAsync(d_b, b, n * sizeof(Fp2), cudaMemcpyHostToDevice, stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_memcpy_async_to_gpu(d_a, a, n * sizeof(Fp2), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_b, b, n * sizeof(Fp2), stream, gpu_index);
     
     // Launch kernel (with stream)
     kernel_fp2_add_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_c, d_a, d_b, n);
     
     // Check for kernel launch errors
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
     // Synchronize stream to ensure kernel completes before copying back
-    err = cudaStreamSynchronize(stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_stream(stream, gpu_index);
     
     // Copy back (synchronous after stream sync)
-    err = cudaMemcpy(c, d_c, n * sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_memcpy_async_to_cpu(c, d_c, n * sizeof(Fp2), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
     
-cleanup:
     // Free device memory (asynchronous with stream)
     if (d_c != nullptr) {
-        cudaFreeAsync(d_c, stream);
+        cuda_drop_async(d_c, stream, gpu_index);
     }
     if (d_a != nullptr) {
-        cudaFreeAsync(d_a, stream);
+        cuda_drop_async(d_a, stream, gpu_index);
     }
     if (d_b != nullptr) {
-        cudaFreeAsync(d_b, stream);
+        cuda_drop_async(d_b, stream, gpu_index);
     }
 }
 
 void fp2_mul_array_host(cudaStream_t stream, uint32_t gpu_index, Fp2* c, const Fp2* a, const Fp2* b, int n) {
     // Validate inputs
-    if (n < 0) {
-        fprintf(stderr, "fp2_mul_array_host: invalid size n=%d\n", n);
-        return;
-    }
+    PANIC_IF_FALSE(n >= 0, "fp2_mul_array_host: invalid size n=%d", n);
     if (n == 0) {
         return;  // Nothing to do
     }
-    if (c == nullptr || a == nullptr || b == nullptr) {
-        fprintf(stderr, "fp2_mul_array_host: null pointer argument\n");
-        return;
-    }
+    PANIC_IF_FALSE(c != nullptr && a != nullptr && b != nullptr, "fp2_mul_array_host: null pointer argument");
     
     // Set the device context
-    cudaError_t err = cudaSetDevice(gpu_index);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) return;
+    cuda_set_device(gpu_index);
     
     // Declare all variables at the top to avoid goto issues
     Fp2 *d_c = nullptr, *d_a = nullptr, *d_b = nullptr;
@@ -226,55 +179,36 @@ void fp2_mul_array_host(cudaStream_t stream, uint32_t gpu_index, Fp2* c, const F
     int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
     
     // Allocate device memory (asynchronous with stream)
-    err = cudaMallocAsync(&d_c, n * sizeof(Fp2), stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMallocAsync(&d_a, n * sizeof(Fp2), stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMallocAsync(&d_b, n * sizeof(Fp2), stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_c = (Fp2*)cuda_malloc_async(n * sizeof(Fp2), stream, gpu_index);
+    d_a = (Fp2*)cuda_malloc_async(n * sizeof(Fp2), stream, gpu_index);
+    d_b = (Fp2*)cuda_malloc_async(n * sizeof(Fp2), stream, gpu_index);
     
     // Copy to device (asynchronous with stream)
-    err = cudaMemcpyAsync(d_a, a, n * sizeof(Fp2), cudaMemcpyHostToDevice, stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpyAsync(d_b, b, n * sizeof(Fp2), cudaMemcpyHostToDevice, stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_memcpy_async_to_gpu(d_a, a, n * sizeof(Fp2), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_b, b, n * sizeof(Fp2), stream, gpu_index);
     
     // Launch kernel (with stream)
     kernel_fp2_mul_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_c, d_a, d_b, n);
     
     // Check for kernel launch errors
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
     // Synchronize stream to ensure kernel completes before copying back
-    err = cudaStreamSynchronize(stream);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_stream(stream, gpu_index);
     
     // Copy back (synchronous after stream sync)
-    err = cudaMemcpy(c, d_c, n * sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_memcpy_async_to_cpu(c, d_c, n * sizeof(Fp2), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
     
-cleanup:
     // Free device memory (asynchronous with stream)
     if (d_c != nullptr) {
-        cudaFreeAsync(d_c, stream);
+        cuda_drop_async(d_c, stream, gpu_index);
     }
     if (d_a != nullptr) {
-        cudaFreeAsync(d_a, stream);
+        cuda_drop_async(d_a, stream, gpu_index);
     }
     if (d_b != nullptr) {
-        cudaFreeAsync(d_b, stream);
+        cuda_drop_async(d_b, stream, gpu_index);
     }
 }
 
@@ -282,581 +216,341 @@ cleanup:
 // These functions launch single-operation kernels to verify arithmetic works on device
 
 void fp2_add_gpu(Fp2* result, const Fp2* a, const Fp2* b) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr, *d_b = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_b = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMalloc(&d_b, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
+    check_cuda_error(cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_add<<<1, 1>>>(d_result, d_a, d_b);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
-    if (d_b != nullptr) cudaFree(d_b);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
+    if (d_b != nullptr) cuda_drop(d_b, gpu_index);
 }
 
 void fp2_sub_gpu(Fp2* result, const Fp2* a, const Fp2* b) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr, *d_b = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_b = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMalloc(&d_b, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
+    check_cuda_error(cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_sub<<<1, 1>>>(d_result, d_a, d_b);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
-    if (d_b != nullptr) cudaFree(d_b);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
+    if (d_b != nullptr) cuda_drop(d_b, gpu_index);
 }
 
 void fp2_mul_gpu(Fp2* result, const Fp2* a, const Fp2* b) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr, *d_b = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_b = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMalloc(&d_b, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
+    check_cuda_error(cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_mul<<<1, 1>>>(d_result, d_a, d_b);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
-    if (d_b != nullptr) cudaFree(d_b);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
+    if (d_b != nullptr) cuda_drop(d_b, gpu_index);
 }
 
 void fp2_neg_gpu(Fp2* result, const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_neg<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
 }
 
 void fp2_conjugate_gpu(Fp2* result, const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_conjugate<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
 }
 
 void fp2_square_gpu(Fp2* result, const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_square<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
 }
 
 void fp2_inv_gpu(Fp2* result, const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_inv<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
 }
 
 void fp2_div_gpu(Fp2* result, const Fp2* a, const Fp2* b) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr, *d_b = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_b = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMalloc(&d_b, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
+    check_cuda_error(cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_div<<<1, 1>>>(d_result, d_a, d_b);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
-    if (d_b != nullptr) cudaFree(d_b);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
+    if (d_b != nullptr) cuda_drop(d_b, gpu_index);
 }
 
 void fp2_mul_by_i_gpu(Fp2* result, const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_mul_by_i<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
 }
 
 void fp2_frobenius_gpu(Fp2* result, const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_frobenius<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
 }
 
 int fp2_cmp_gpu(const Fp2* a, const Fp2* b) {
+    uint32_t gpu_index = cuda_get_device();
     int *d_result = nullptr, *h_result = nullptr;
     Fp2 *d_a = nullptr, *d_b = nullptr;
-    cudaError_t err;
     int result = 0;
     
     h_result = new int;
-    err = cudaMalloc(&d_result, sizeof(int));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (int*)cuda_malloc(sizeof(int), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_b = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMalloc(&d_b, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
+    check_cuda_error(cudaMemcpy(d_b, b, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_cmp<<<1, 1>>>(d_result, d_a, d_b);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(h_result, d_result, sizeof(int), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
-    if (err == cudaSuccess) {
-        result = *h_result;
-    }
+    check_cuda_error(cudaMemcpy(h_result, d_result, sizeof(int), cudaMemcpyDeviceToHost));
+    result = *h_result;
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
-    if (d_b != nullptr) cudaFree(d_b);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
+    if (d_b != nullptr) cuda_drop(d_b, gpu_index);
     if (h_result != nullptr) delete h_result;
     return result;
 }
 
 bool fp2_is_zero_gpu(const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     bool *d_result = nullptr, *h_result = nullptr;
     Fp2 *d_a = nullptr;
-    cudaError_t err;
     bool result = false;
     
     h_result = new bool;
-    err = cudaMalloc(&d_result, sizeof(bool));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (bool*)cuda_malloc(sizeof(bool), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_is_zero<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(h_result, d_result, sizeof(bool), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
-    if (err == cudaSuccess) {
-        result = *h_result;
-    }
+    check_cuda_error(cudaMemcpy(h_result, d_result, sizeof(bool), cudaMemcpyDeviceToHost));
+    result = *h_result;
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
     if (h_result != nullptr) delete h_result;
     return result;
 }
 
 bool fp2_is_one_gpu(const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     bool *d_result = nullptr, *h_result = nullptr;
     Fp2 *d_a = nullptr;
-    cudaError_t err;
     bool result = false;
     
     h_result = new bool;
-    err = cudaMalloc(&d_result, sizeof(bool));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (bool*)cuda_malloc(sizeof(bool), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_is_one<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(h_result, d_result, sizeof(bool), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
-    if (err == cudaSuccess) {
-        result = *h_result;
-    }
+    check_cuda_error(cudaMemcpy(h_result, d_result, sizeof(bool), cudaMemcpyDeviceToHost));
+    result = *h_result;
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
     if (h_result != nullptr) delete h_result;
     return result;
 }
 
 
 void fp2_copy_gpu(Fp2* result, const Fp2* a) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_a = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_a = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
     
-    err = cudaMalloc(&d_a, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_a, a, sizeof(Fp2), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_copy<<<1, 1>>>(d_result, d_a);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_a != nullptr) cudaFree(d_a);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_a != nullptr) cuda_drop(d_a, gpu_index);
 }
 
 void fp2_cmov_gpu(Fp2* result, const Fp2* src, uint64_t condition) {
+    uint32_t gpu_index = cuda_get_device();
     Fp2 *d_result = nullptr, *d_src = nullptr;
     uint64_t *d_condition = nullptr;
-    cudaError_t err;
     
-    err = cudaMalloc(&d_result, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMalloc(&d_src, sizeof(Fp2));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMalloc(&d_condition, sizeof(uint64_t));
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    d_result = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_src = (Fp2*)cuda_malloc(sizeof(Fp2), gpu_index);
+    d_condition = (uint64_t*)cuda_malloc(sizeof(uint64_t), gpu_index);
     
     // Copy result first (it's the destination that may be modified)
-    err = cudaMemcpy(d_result, result, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_src, src, sizeof(Fp2), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
-    
-    err = cudaMemcpy(d_condition, &condition, sizeof(uint64_t), cudaMemcpyHostToDevice);
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaMemcpy(d_result, result, sizeof(Fp2), cudaMemcpyHostToDevice));
+    check_cuda_error(cudaMemcpy(d_src, src, sizeof(Fp2), cudaMemcpyHostToDevice));
+    check_cuda_error(cudaMemcpy(d_condition, &condition, sizeof(uint64_t), cudaMemcpyHostToDevice));
     
     kernel_test_fp2_cmov<<<1, 1>>>(d_result, d_src, condition);
-    err = cudaPeekAtLastError();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    check_cuda_error(cudaGetLastError());
     
-    err = cudaDeviceSynchronize();
-    CHECK_CUDA(err);
-    if (err != cudaSuccess) goto cleanup;
+    cuda_synchronize_device(gpu_index);
     
-    err = cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost);
-    CHECK_CUDA(err);
+    check_cuda_error(cudaMemcpy(result, d_result, sizeof(Fp2), cudaMemcpyDeviceToHost));
     
-cleanup:
-    if (d_result != nullptr) cudaFree(d_result);
-    if (d_src != nullptr) cudaFree(d_src);
-    if (d_condition != nullptr) cudaFree(d_condition);
+    if (d_result != nullptr) cuda_drop(d_result, gpu_index);
+    if (d_src != nullptr) cuda_drop(d_src, gpu_index);
+    if (d_condition != nullptr) cuda_drop(d_condition, gpu_index);
 }

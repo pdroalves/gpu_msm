@@ -60,6 +60,7 @@ FetchContent_MakeAvailable(benchmark)
 
 # Source files
 set(FP_SOURCES
+    src/device.cu
     src/fp.cu
     src/fp_kernels.cu
     src/fp2.cu
@@ -68,6 +69,7 @@ set(FP_SOURCES
 )
 
 set(FP_HEADERS
+    include/device.h
     include/fp.h
     include/fp_kernels.h
     include/fp2.h
