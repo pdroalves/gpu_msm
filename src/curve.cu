@@ -740,6 +740,50 @@ __global__ void kernel_accumulate_buckets_multi(
 // Standard Pippenger: window_sum = bucket[1] * 1 + bucket[2] * 2 + ... + bucket[15] * 15
 // Using Horner's method: window_sum = bucket[1] + 2 * (bucket[2] + 2 * (bucket[3] + ... + 2 * bucket[15]))
 // Then result = result * 2^window_size + window_sum
+// Helper function: Compute k * P using binary method (for small k, 1 <= k <= 15)
+template<typename PointType>
+__device__ void point_scalar_mul_small(PointType& result, const PointType& P, int k) {
+    using Traits = PointTraits<PointType>;
+    
+    if (k == 0 || Traits::is_infinity(P)) {
+        Traits::point_at_infinity(result);
+        return;
+    }
+    
+    if (k == 1) {
+        Traits::field_copy(result.x, P.x);
+        Traits::field_copy(result.y, P.y);
+        result.infinity = P.infinity;
+        return;
+    }
+    
+    // Binary scalar multiplication: k * P
+    // Start with P, then for each bit from MSB-1 to LSB: double, then add P if bit is set
+    PointType acc;
+    Traits::field_copy(acc.x, P.x);
+    Traits::field_copy(acc.y, P.y);
+    acc.infinity = P.infinity;
+    
+    // Find the MSB of k
+    int msb = 31 - __clz(k);  // __clz counts leading zeros, so msb is the highest set bit
+    
+    // Process bits from msb-1 down to 0
+    for (int bit = msb - 1; bit >= 0; bit--) {
+        point_double(acc, acc);
+        if (k & (1 << bit)) {
+            PointType temp;
+            point_add(temp, acc, P);
+            Traits::field_copy(acc.x, temp.x);
+            Traits::field_copy(acc.y, temp.y);
+            acc.infinity = temp.infinity;
+        }
+    }
+    
+    Traits::field_copy(result.x, acc.x);
+    Traits::field_copy(result.y, acc.y);
+    result.infinity = acc.infinity;
+}
+
 template<typename PointType>
 __global__ void kernel_combine_buckets(
     PointType* result,
@@ -748,32 +792,54 @@ __global__ void kernel_combine_buckets(
     int window_idx
 ) {
     using Traits = PointTraits<PointType>;
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        // Compute window_sum = bucket[1] * 1 + bucket[2] * 2 + ... + bucket[15] * 15
-        // Direct method: for each bucket i, add it i times
-        // This is O(n^2) but acceptable for small n (16 buckets = 120 additions per window)
-        // For larger window sizes, this could be optimized further, but for 4-bit windows it's fine
-        PointType window_sum;
-        Traits::point_at_infinity(window_sum);
-        
-        for (int i = 1; i < num_buckets; i++) {
-            if (!Traits::is_infinity(buckets[i])) {
-                // Add bucket[i] i times to window_sum
-                for (int j = 0; j < i; j++) {
-                    if (Traits::is_infinity(window_sum)) {
-                        Traits::field_copy(window_sum.x, buckets[i].x);
-                        Traits::field_copy(window_sum.y, buckets[i].y);
-                        window_sum.infinity = buckets[i].infinity;
-                    } else {
-                        PointType temp;
-                        point_add(temp, window_sum, buckets[i]);
-                        Traits::field_copy(window_sum.x, temp.x);
-                        Traits::field_copy(window_sum.y, temp.y);
-                        window_sum.infinity = temp.infinity;
-                    }
+    
+    // Shared memory for storing weighted buckets and reduction tree
+    extern __shared__ char shared_mem[];
+    PointType* shared_weighted = (PointType*)shared_mem;
+    
+    // Each thread processes one bucket (bucket index = threadIdx.x + 1, since bucket[0] is not used)
+    int bucket_idx = threadIdx.x + 1;
+    
+    // Compute i * bucket[i] for this thread's bucket using binary scalar multiplication
+    if (bucket_idx < num_buckets) {
+        if (!Traits::is_infinity(buckets[bucket_idx])) {
+            point_scalar_mul_small(shared_weighted[threadIdx.x], buckets[bucket_idx], bucket_idx);
+        } else {
+            Traits::point_at_infinity(shared_weighted[threadIdx.x]);
+        }
+    } else {
+        // Threads beyond num_buckets-1 set to infinity
+        Traits::point_at_infinity(shared_weighted[threadIdx.x]);
+    }
+    
+    __syncthreads();
+    
+    // Reduction tree: combine all weighted buckets
+    // Use standard parallel reduction pattern
+    int active_threads = num_buckets - 1;  // Number of buckets to process (buckets 1 to num_buckets-1)
+    
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride && threadIdx.x + stride < active_threads) {
+            if (!Traits::is_infinity(shared_weighted[threadIdx.x + stride])) {
+                if (Traits::is_infinity(shared_weighted[threadIdx.x])) {
+                    Traits::field_copy(shared_weighted[threadIdx.x].x, shared_weighted[threadIdx.x + stride].x);
+                    Traits::field_copy(shared_weighted[threadIdx.x].y, shared_weighted[threadIdx.x + stride].y);
+                    shared_weighted[threadIdx.x].infinity = shared_weighted[threadIdx.x + stride].infinity;
+                } else {
+                    PointType temp;
+                    point_add(temp, shared_weighted[threadIdx.x], shared_weighted[threadIdx.x + stride]);
+                    Traits::field_copy(shared_weighted[threadIdx.x].x, temp.x);
+                    Traits::field_copy(shared_weighted[threadIdx.x].y, temp.y);
+                    shared_weighted[threadIdx.x].infinity = temp.infinity;
                 }
             }
         }
+        __syncthreads();
+    }
+    
+    // Thread 0 has the final window_sum, add it to result
+    if (threadIdx.x == 0) {
+        PointType window_sum = shared_weighted[0];
         
         // Add window sum to result
         // For windows processed from MSB to LSB:
@@ -1219,7 +1285,11 @@ void point_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, PointType* d_r
         check_cuda_error(cudaGetLastError());
         
         // Combine final buckets and accumulate into result
-        kernel_combine_buckets<PointType><<<1, 1, 0, stream>>>(d_result, d_final_buckets, MSM_BUCKET_COUNT, window_idx);
+        // Use 16 threads (one per bucket) with shared memory for parallel binary scalar multiplication and reduction
+        size_t combine_shared_mem = MSM_BUCKET_COUNT * sizeof(PointType);
+        kernel_combine_buckets<PointType><<<1, MSM_BUCKET_COUNT, combine_shared_mem, stream>>>(
+            d_result, d_final_buckets, MSM_BUCKET_COUNT, window_idx
+        );
         check_cuda_error(cudaGetLastError());
     }
 }
@@ -1269,7 +1339,11 @@ void point_msm_async(cudaStream_t stream, uint32_t gpu_index, PointType* d_resul
         check_cuda_error(cudaGetLastError());
         
         // Combine buckets and accumulate into result
-        kernel_combine_buckets<PointType><<<1, 1, 0, stream>>>(d_result, d_buckets, MSM_BUCKET_COUNT, window_idx);
+        // Use 16 threads (one per bucket) with shared memory for parallel binary scalar multiplication and reduction
+        size_t combine_shared_mem = MSM_BUCKET_COUNT * sizeof(PointType);
+        kernel_combine_buckets<PointType><<<1, MSM_BUCKET_COUNT, combine_shared_mem, stream>>>(
+            d_result, d_buckets, MSM_BUCKET_COUNT, window_idx
+        );
         check_cuda_error(cudaGetLastError());
     }
 }
