@@ -623,26 +623,35 @@ __global__ void kernel_accumulate_buckets_u64(
     __syncthreads();
     
     // Phase 2: Parallel reduction per bucket
-    // Each thread handles one bucket and sums all contributions to that bucket
+    // Optimized: Each bucket thread sums contributions using optimized loop
+    // Cache bucket_idx and reduce redundant checks
     if (threadIdx.x < MSM_BUCKET_COUNT) {
         int bucket_idx = threadIdx.x;
         PointType bucket_sum;
         Traits::point_at_infinity(bucket_sum);
         
-        // Sum contributions from threads that belong to this bucket
-        for (int t = 0; t < blockDim.x; t++) {
-            int global_t_idx = blockIdx.x * blockDim.x + t;
-            if (global_t_idx < n && thread_buckets[t] == bucket_idx && !Traits::is_infinity(thread_points[t])) {
-                if (Traits::is_infinity(bucket_sum)) {
-                    Traits::field_copy(bucket_sum.x, thread_points[t].x);
-                    Traits::field_copy(bucket_sum.y, thread_points[t].y);
-                    bucket_sum.infinity = thread_points[t].infinity;
-                } else {
-                    PointType temp;
-                    point_add(temp, bucket_sum, thread_points[t]);
-                    Traits::field_copy(bucket_sum.x, temp.x);
-                    Traits::field_copy(bucket_sum.y, temp.y);
-                    bucket_sum.infinity = temp.infinity;
+        // Optimized: Sum contributions from threads that belong to this bucket
+        // Pre-check global bounds once, then iterate with minimal checks
+        int block_start = blockIdx.x * blockDim.x;
+        int block_end = min(block_start + blockDim.x, n);
+        
+        for (int local_t = 0; local_t < blockDim.x; local_t++) {
+            int global_t_idx = block_start + local_t;
+            if (global_t_idx < block_end && thread_buckets[local_t] == bucket_idx) {
+                // Only process if point is not infinity (already checked bucket match)
+                const PointType& pt = thread_points[local_t];
+                if (!Traits::is_infinity(pt)) {
+                    if (Traits::is_infinity(bucket_sum)) {
+                        Traits::field_copy(bucket_sum.x, pt.x);
+                        Traits::field_copy(bucket_sum.y, pt.y);
+                        bucket_sum.infinity = pt.infinity;
+                    } else {
+                        PointType temp;
+                        point_add(temp, bucket_sum, pt);
+                        Traits::field_copy(bucket_sum.x, temp.x);
+                        Traits::field_copy(bucket_sum.y, temp.y);
+                        bucket_sum.infinity = temp.infinity;
+                    }
                 }
             }
         }
