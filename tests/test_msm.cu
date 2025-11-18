@@ -186,25 +186,24 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
     // Convert points to Montgomery form (required for performance)
     int threadsPerBlock_conv = 256;
     int blocks_conv = (N + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
-    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
-    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, stream>>>(d_points, N);
+    point_to_montgomery_batch<G1Point>(stream, gpu_index, d_points, N);
     check_cuda_error(cudaGetLastError());
     
     // Copy generator to device (generator is already in Montgomery form from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
     
     // Compute MSM on device
-    g1_msm_u64(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    point_msm_u64<G1Point>(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
     
     // Compute expected result on device: G * (N * (N+1) / 2)
     uint64_t expected_scalar = triangular_number(N);
-    g1_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
+    point_scalar_mul_u64<G1Point>(stream, gpu_index, d_expected, d_G, expected_scalar);
     
     // Convert results back from Montgomery form before comparing
     G1Point* d_result_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_expected_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    g1_from_montgomery(stream, gpu_index, d_result_normal, d_result);
-    g1_from_montgomery(stream, gpu_index, d_expected_normal, d_expected);
+    point_from_montgomery<G1Point>(stream, gpu_index, d_result_normal, d_result);
+    point_from_montgomery<G1Point>(stream, gpu_index, d_expected_normal, d_expected);
     
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);
@@ -307,8 +306,7 @@ TEST_F(MSMTest, G1MSMWithGeneratorBasicTest) {
     // Convert points to Montgomery form (required for performance)
     int threadsPerBlock_conv = 256;
     int blocks_conv = (N + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
-    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
-    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, stream>>>(d_points, N);
+    point_to_montgomery_batch<G1Point>(stream, gpu_index, d_points, N);
     check_cuda_error(cudaGetLastError());
     
     // Copy generator to device (generator is already in Montgomery from host)
@@ -417,25 +415,24 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
     // Convert points to Montgomery form (required for performance)
     int threadsPerBlock_conv = 128;
     int blocks_conv = (N + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
-    extern __global__ void kernel_g2_to_montgomery_batch(G2Point* points, int n);
-    kernel_g2_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, stream>>>(d_points, N);
+    point_to_montgomery_batch<G2Point>(stream, gpu_index, d_points, N);
     check_cuda_error(cudaGetLastError());
     
     // Copy generator to device (generator is already in Montgomery form from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G2Point), stream, gpu_index);
     
     // Compute MSM on device
-    g2_msm_u64(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    point_msm_u64<G2Point>(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
     
     // Compute expected result on device: G * (N * (N+1) / 2)
     uint64_t expected_scalar = triangular_number(N);
-    g2_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
+    point_scalar_mul_u64<G2Point>(stream, gpu_index, d_expected, d_G, expected_scalar);
     
     // Convert results back from Montgomery form before comparing
     G2Point* d_result_normal = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
     G2Point* d_expected_normal = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
-    g2_from_montgomery(stream, gpu_index, d_result_normal, d_result);
-    g2_from_montgomery(stream, gpu_index, d_expected_normal, d_expected);
+    point_from_montgomery<G2Point>(stream, gpu_index, d_result_normal, d_result);
+    point_from_montgomery<G2Point>(stream, gpu_index, d_expected_normal, d_expected);
     
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);
@@ -517,25 +514,24 @@ TEST_F(MSMTest, G1MSMLargeN) {
     // Convert points to Montgomery form (required for performance)
     int threadsPerBlock_conv = 256;
     int blocks_conv = (N + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
-    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
-    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, stream>>>(d_points, N);
+    point_to_montgomery_batch<G1Point>(stream, gpu_index, d_points, N);
     check_cuda_error(cudaGetLastError());
     
     // Copy generator to device (generator is already in Montgomery from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
     
     // Compute MSM on device
-    g1_msm_u64(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    point_msm_u64<G1Point>(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
     
     // Compute expected result on device
     uint64_t expected_scalar = triangular_number(N);
-    g1_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
+    point_scalar_mul_u64<G1Point>(stream, gpu_index, d_expected, d_G, expected_scalar);
     
     // Convert results back from Montgomery form before comparing
     G1Point* d_result_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_expected_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    g1_from_montgomery(stream, gpu_index, d_result_normal, d_result);
-    g1_from_montgomery(stream, gpu_index, d_expected_normal, d_expected);
+    point_from_montgomery<G1Point>(stream, gpu_index, d_result_normal, d_result);
+    point_from_montgomery<G1Point>(stream, gpu_index, d_expected_normal, d_expected);
     
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);

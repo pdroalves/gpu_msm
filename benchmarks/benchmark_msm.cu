@@ -107,7 +107,7 @@ static void BM_G1_ScalarMul(benchmark::State& state) {
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     
     for (auto _ : state) {
-        g1_scalar_mul_u64(g_benchmark_stream, g_gpu_index, d_result, d_point, scalar);
+        point_scalar_mul_u64<G1Point>(g_benchmark_stream, g_gpu_index, d_result, d_point, scalar);
         benchmark::ClobberMemory();
     }
     
@@ -135,7 +135,7 @@ static void BM_G2_ScalarMul(benchmark::State& state) {
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     
     for (auto _ : state) {
-        g2_scalar_mul_u64(g_benchmark_stream, g_gpu_index, d_result, d_point, scalar);
+        point_scalar_mul_u64<G2Point>(g_benchmark_stream, g_gpu_index, d_result, d_point, scalar);
         benchmark::ClobberMemory();
     }
     
@@ -181,8 +181,7 @@ static void BM_G1_MSM_U64(benchmark::State& state) {
     // Convert points to Montgomery form (required for performance - all operations use Montgomery)
     int threadsPerBlock_conv = 256;
     int blocks_conv = (n + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
-    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
-    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, g_benchmark_stream>>>(d_points, n);
+    point_to_montgomery_batch<G1Point>(g_benchmark_stream, g_gpu_index, d_points, n);
     check_cuda_error(cudaGetLastError());
     
     // Initialize result and scratch memory to zero (once, before benchmark loop)
@@ -194,7 +193,7 @@ static void BM_G1_MSM_U64(benchmark::State& state) {
     
     // Benchmark loop: only measure the MSM computation, no memory operations
     for (auto _ : state) {
-        g1_msm_u64(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
+        point_msm_u64<G1Point>(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
         benchmark::ClobberMemory();
     }
     
@@ -246,8 +245,7 @@ static void BM_G2_MSM_U64(benchmark::State& state) {
     // Convert points to Montgomery form (required for performance - all operations use Montgomery)
     int threadsPerBlock_conv = 256;
     int blocks_conv = (n + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
-    extern __global__ void kernel_g2_to_montgomery_batch(G2Point* points, int n);
-    kernel_g2_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, g_benchmark_stream>>>(d_points, n);
+    point_to_montgomery_batch<G2Point>(g_benchmark_stream, g_gpu_index, d_points, n);
     check_cuda_error(cudaGetLastError());
     
     // Initialize result and scratch memory to zero (once, before benchmark loop)
@@ -259,7 +257,7 @@ static void BM_G2_MSM_U64(benchmark::State& state) {
     
     // Benchmark loop: only measure the MSM computation, no memory operations
     for (auto _ : state) {
-        g2_msm_u64(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
+        point_msm_u64<G2Point>(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
         benchmark::ClobberMemory();
     }
     
@@ -316,8 +314,7 @@ static void BM_G1_MSM_Generator(benchmark::State& state) {
     // Convert points to Montgomery form (required for performance - all operations use Montgomery)
     int threadsPerBlock_conv = 256;
     int blocks_conv = (n + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
-    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
-    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, g_benchmark_stream>>>(d_points, n);
+    point_to_montgomery_batch<G1Point>(g_benchmark_stream, g_gpu_index, d_points, n);
     check_cuda_error(cudaGetLastError());
     
     // Initialize result and scratch memory to zero (once, before benchmark loop)
@@ -329,7 +326,7 @@ static void BM_G1_MSM_Generator(benchmark::State& state) {
     
     // Benchmark loop: only measure the MSM computation, no memory operations
     for (auto _ : state) {
-        g1_msm_u64(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
+        point_msm_u64<G1Point>(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
         benchmark::ClobberMemory();
     }
     
@@ -386,8 +383,7 @@ static void BM_G2_MSM_Generator(benchmark::State& state) {
     // Convert points to Montgomery form (required for performance - all operations use Montgomery)
     int threadsPerBlock_conv = 256;
     int blocks_conv = (n + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
-    extern __global__ void kernel_g2_to_montgomery_batch(G2Point* points, int n);
-    kernel_g2_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, g_benchmark_stream>>>(d_points, n);
+    point_to_montgomery_batch<G2Point>(g_benchmark_stream, g_gpu_index, d_points, n);
     check_cuda_error(cudaGetLastError());
     
     // Initialize result and scratch memory to zero (once, before benchmark loop)
@@ -399,7 +395,7 @@ static void BM_G2_MSM_Generator(benchmark::State& state) {
     
     // Benchmark loop: only measure the MSM computation, no memory operations
     for (auto _ : state) {
-        g2_msm_u64(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
+        point_msm_u64<G2Point>(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
         benchmark::ClobberMemory();
     }
     
