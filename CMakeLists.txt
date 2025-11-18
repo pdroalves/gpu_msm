@@ -16,7 +16,7 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 # - sm_86: Ampere (RTX 30xx consumer)
 # - sm_89: Ada Lovelace (RTX 40xx)
 # - sm_90: Hopper (H100)
-set(CMAKE_CUDA_ARCHITECTURES "75" CACHE STRING "CUDA architectures to build for")
+set(CMAKE_CUDA_ARCHITECTURES "89" CACHE STRING "CUDA architectures to build for")
 
 # Enable CUDA separable compilation for better optimization
 set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
@@ -64,6 +64,7 @@ set(FP_SOURCES
     src/fp_kernels.cu
     src/fp2.cu
     src/fp2_kernels.cu
+    src/curve.cu
 )
 
 set(FP_HEADERS
@@ -71,6 +72,7 @@ set(FP_HEADERS
     include/fp_kernels.h
     include/fp2.h
     include/fp2_kernels.h
+    include/curve.h
 )
 
 # Create library
@@ -95,9 +97,11 @@ target_link_libraries(test_fp
     GTest::gtest_main
 )
 
-# Set CUDA architecture for test executable
+# Set CUDA properties for test executable
 set_target_properties(test_fp PROPERTIES
     CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
 # Register tests with CTest
@@ -111,9 +115,11 @@ target_link_libraries(test_fp2
     GTest::gtest_main
 )
 
-# Set CUDA architecture for test executable
+# Set CUDA properties for test executable
 set_target_properties(test_fp2 PROPERTIES
     CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
 # Register Fp2 tests with CTest
@@ -126,9 +132,11 @@ target_link_libraries(benchmark_fp
     benchmark::benchmark
 )
 
-# Set CUDA architecture for benchmark executable
+# Set CUDA properties for benchmark executable
 set_target_properties(benchmark_fp PROPERTIES
     CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
 # Benchmark executable for Fp2
@@ -138,9 +146,11 @@ target_link_libraries(benchmark_fp2
     benchmark::benchmark
 )
 
-# Set CUDA architecture for benchmark executable
+# Set CUDA properties for benchmark executable
 set_target_properties(benchmark_fp2 PROPERTIES
     CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
 # Installation (optional)

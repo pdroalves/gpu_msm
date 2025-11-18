@@ -64,36 +64,54 @@ static uint64_t get_host_p_prime() {
 }
 
 // Host function to initialize device constants
-// Must be called once before using device code
-void init_device_modulus() {
+// Must be called once per device before using device code
+// stream: CUDA stream to use for memory copy operations
+// gpu_index: GPU device index to use
+void init_device_modulus(cudaStream_t stream, uint32_t gpu_index) {
+    // Set the device context
+    cudaError_t err = cudaSetDevice(gpu_index);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Error setting device %u: %s\n", gpu_index, cudaGetErrorString(err));
+        return;
+    }
+    
     Fp host_mod = get_host_modulus();
     Fp host_r2 = get_host_r2();
     Fp host_r_inv = get_host_r_inv();
     uint64_t host_p_prime = get_host_p_prime();
     
-    cudaError_t err;
+    // Note: cudaMemcpyToSymbolAsync doesn't exist for __constant__ memory
+    // We must use synchronous cudaMemcpyToSymbol, but we ensure the device is set correctly
     err = cudaMemcpyToSymbol(DEVICE_MODULUS, &host_mod, sizeof(Fp));
     if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device modulus: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "Error initializing device modulus on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
         return;
     }
     
     err = cudaMemcpyToSymbol(DEVICE_R2, &host_r2, sizeof(Fp));
     if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device R2: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "Error initializing device R2 on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
         return;
     }
     
     err = cudaMemcpyToSymbol(DEVICE_R_INV, &host_r_inv, sizeof(Fp));
     if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device R_INV: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "Error initializing device R_INV on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
         return;
     }
     
     err = cudaMemcpyToSymbol(DEVICE_P_PRIME, &host_p_prime, sizeof(uint64_t));
     if (err != cudaSuccess) {
-        fprintf(stderr, "Error initializing device P_PRIME: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "Error initializing device P_PRIME on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
         return;
+    }
+    
+    // Synchronize stream to ensure completion
+    if (stream != nullptr) {
+        err = cudaStreamSynchronize(stream);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Error synchronizing stream on GPU %u: %s\n", gpu_index, cudaGetErrorString(err));
+        }
     }
 }
 
@@ -434,111 +452,6 @@ __host__ __device__ void fp_to_montgomery(Fp& c, const Fp& a) {
     fp_mont_reduce(c, product);
 }
 
-// Regular reduction for double-width number (not Montgomery)
-// Helper function to reduce a double-width number mod p
-// Input: a[0..2*FP_LIMBS-1] represents a big integer
-// Output: c = a mod p
-__host__ __device__ void fp_reduce_regular(Fp& c, const uint64_t* a) {
-    const Fp& p = fp_modulus();
-    
-    // Start with low part
-    Fp result;
-    for (int i = 0; i < FP_LIMBS; i++) {
-        result.limb[i] = a[i];
-    }
-    
-    // Check if high part exists
-    bool has_high = false;
-    for (int i = FP_LIMBS; i < 2 * FP_LIMBS; i++) {
-        if (a[i] != 0) {
-            has_high = true;
-            break;
-        }
-    }
-    
-    if (!has_high) {
-        // No high part, just ensure result < p
-        if (fp_cmp(result, p) >= 0) {
-            fp_sub_raw(result, result, p);
-        }
-        fp_copy(c, result);
-        return;
-    }
-    
-    // High part exists - the full value is: low + high * 2^448
-    // We need to compute: (low + high * 2^448) mod p
-    
-    // The high part represents high * 2^448 = high * R
-    // We need: high * R mod p
-    
-    // Since R = 2^448 and R > p, we have R mod p = R - floor(R/p) * p
-    // But we can compute it more directly:
-    // high * R mod p = high * (R mod p) mod p
-    
-    // Actually, we can use the fact that R^2 is precomputed:
-    // high * R mod p = (high * R^2) * R_INV mod p
-    // But that gives us the result in Montgomery form again...
-    
-    // Simpler approach: Since R_INV * R = 1 mod p, we have:
-    // R mod p = 1 * R_INV_INV mod p, but we don't have R_INV_INV
-    
-    // Actually, the correct approach: compute R mod p once, then use it
-    // R mod p = 2^448 mod p
-    // We can compute this: R mod p = R - floor(R/p) * p
-    
-    // For now, use a direct but correct method:
-    // The value is represented as: a[0] + a[1]*2^64 + ... + a[13]*2^832
-    // We need to reduce this mod p
-    
-    // Since p is 448 bits and our number can be up to 896 bits,
-    // we can estimate: value / p <= 2^448
-    // So we need to subtract p at most 2^448 times (but that's too many)
-    
-    // Better: work with the high part directly
-    // Compute high * R mod p where R = 2^448
-    // We can do this by: high * R^2 * R_INV mod p = high * R mod p (in Montgomery form)
-    // But we want normal form, so: (high * R^2 * R_INV) * R_INV mod p = high * R * R_INV mod p = high mod p
-    // That's not right either...
-    
-    // Actually, let's compute R mod p first:
-    // R = 2^448, so R mod p = 2^448 mod p
-    // We can compute this by: R^2 * R_INV mod p = R mod p (in Montgomery form)
-    // Then convert: (R mod p in Montgomery) * R_INV = R * R_INV = 1 mod p? No...
-    
-    // I think the issue is that I'm confusing myself. Let me use the simplest correct approach:
-    // Just subtract p many times. Since the high part is small (for reasonable inputs),
-    // this should be fast enough.
-    
-    // Estimate how many times to subtract based on high part
-    // If high part is non-zero, we need to account for high * 2^448
-    // Since 2^448 ≈ p (actually 2^448 > p), we have 2^448 mod p = 2^448 - p (approximately)
-    
-    // For correctness, just subtract p until we're done
-    // The high part being non-zero means we have at least 2^448, which is > p
-    // So we need to subtract p at least once for each "unit" in the high part
-    
-    // Simple: subtract p repeatedly until high part would be zero and result < p
-    // We'll use a reasonable limit
-    for (int iter = 0; iter < 10000; iter++) {
-        // Check if we're done: result < p
-        if (fp_cmp(result, p) < 0) {
-            // Check if subtracting p one more time would make it negative
-            // If not, we might still need to account for high part
-            // For now, if result < p, we're likely done (assuming high part was small)
-            break;
-        }
-        
-        fp_sub_raw(result, result, p);
-    }
-    
-    // Final check
-    while (fp_cmp(result, p) >= 0) {
-        fp_sub_raw(result, result, p);
-    }
-    
-    fp_copy(c, result);
-}
-
 // Convert from Montgomery form: c = (a * R_INV) mod p
 // Input a is in Montgomery form, output c is in normal form
 __host__ __device__ void fp_from_montgomery(Fp& c, const Fp& a) {
@@ -557,6 +470,20 @@ __host__ __device__ void fp_from_montgomery(Fp& c, const Fp& a) {
     
     // Montgomery reduction: computes (extended * R_INV) mod p = (a * R_INV) mod p = value mod p
     fp_mont_reduce(c, extended);
+}
+
+// Batch conversion to Montgomery form
+__host__ __device__ void fp_to_montgomery_batch(Fp* dst, const Fp* src, int n) {
+    for (int i = 0; i < n; i++) {
+        fp_to_montgomery(dst[i], src[i]);
+    }
+}
+
+// Batch conversion from Montgomery form
+__host__ __device__ void fp_from_montgomery_batch(Fp* dst, const Fp* src, int n) {
+    for (int i = 0; i < n; i++) {
+        fp_from_montgomery(dst[i], src[i]);
+    }
 }
 
 // Multiplication with modular reduction
@@ -581,6 +508,235 @@ __host__ __device__ void fp_neg(Fp& c, const Fp& a) {
         const Fp& p = fp_modulus();
         fp_sub(c, p, a);
     }
+}
+
+// Exponentiation by squaring (helper for inversion and pow)
+// Computes base^exp mod p where exp is a big integer
+// Uses Montgomery form internally for efficiency
+__host__ __device__ static void fp_pow_internal(Fp& result, const Fp& base, const uint64_t* exp, int exp_limbs) {
+    // Convert base to Montgomery form
+    Fp base_mont;
+    fp_to_montgomery(base_mont, base);
+    
+    // Result starts as 1 in Montgomery form
+    Fp one;
+    fp_one(one);
+    fp_to_montgomery(result, one);
+    
+    // Find the most significant bit
+    int msb_idx = exp_limbs - 1;
+    while (msb_idx >= 0 && exp[msb_idx] == 0) {
+        msb_idx--;
+    }
+    
+    if (msb_idx < 0) {
+        // Exponent is zero, result is 1
+        fp_one(one);
+        fp_to_montgomery(result, one);
+        // result is already in Montgomery form, convert back to normal
+        Fp result_normal;
+        fp_from_montgomery(result_normal, result);
+        fp_copy(result, result_normal);
+        return;
+    }
+    
+    // Find the most significant bit in the highest non-zero limb
+    uint64_t msb_val = exp[msb_idx];
+    int bit_pos = 63;
+    while (bit_pos >= 0 && ((msb_val >> bit_pos) & 1) == 0) {
+        bit_pos--;
+    }
+    
+    // Square-and-multiply algorithm
+    for (int limb_idx = msb_idx; limb_idx >= 0; limb_idx--) {
+        int start_bit = (limb_idx == msb_idx) ? bit_pos : 63;
+        
+        for (int bit = start_bit; bit >= 0; bit--) {
+            // Square result
+            Fp temp;
+            fp_mont_mul(temp, result, result);
+            fp_copy(result, temp);
+            
+            // Multiply by base if current bit is set
+            if ((exp[limb_idx] >> bit) & 1) {
+                fp_mont_mul(temp, result, base_mont);
+                fp_copy(result, temp);
+            }
+        }
+    }
+    
+    // Convert result back from Montgomery form
+    Fp result_normal;
+    fp_from_montgomery(result_normal, result);
+    fp_copy(result, result_normal);
+}
+
+// Exponentiation with 64-bit exponent
+__host__ __device__ void fp_pow_u64(Fp& c, const Fp& a, uint64_t e) {
+    uint64_t exp_array[1] = {e};
+    fp_pow_internal(c, a, exp_array, 1);
+}
+
+// Exponentiation with big integer exponent
+__host__ __device__ void fp_pow(Fp& c, const Fp& a, const uint64_t* e, int e_limbs) {
+    // Limit to FP_LIMBS to avoid issues
+    int actual_limbs = (e_limbs > FP_LIMBS) ? FP_LIMBS : e_limbs;
+    fp_pow_internal(c, a, e, actual_limbs);
+}
+
+// Inversion: c = a^(-1) mod p
+// Uses Fermat's little theorem: a^(p-2) = a^(-1) mod p
+__host__ __device__ void fp_inv(Fp& c, const Fp& a) {
+    if (fp_is_zero(a)) {
+        // Division by zero: return 0
+        fp_zero(c);
+        return;
+    }
+    
+    // Compute a^(p-2) mod p
+    const Fp& p = fp_modulus();
+    
+    // p - 2 in little-endian format
+    Fp p_minus_2;
+    Fp two;
+    fp_one(two);
+    two.limb[0] = 2;
+    fp_sub(p_minus_2, p, two);
+    
+    // Compute a^(p-2) mod p
+    fp_pow_internal(c, a, p_minus_2.limb, FP_LIMBS);
+}
+
+// Division: c = a / b mod p = a * b^(-1) mod p
+__host__ __device__ void fp_div(Fp& c, const Fp& a, const Fp& b) {
+    if (fp_is_zero(b)) {
+        // Division by zero: return 0
+        fp_zero(c);
+        return;
+    }
+    
+    Fp b_inv;
+    fp_inv(b_inv, b);
+    fp_mul(c, a, b_inv);
+}
+
+// Helper: Divide Fp by 2 (right shift by 1)
+__host__ __device__ static void fp_div_by_2(Fp& result, const Fp& a) {
+    uint64_t carry = 0;
+    for (int i = FP_LIMBS - 1; i >= 0; i--) {
+        uint64_t new_val = (a.limb[i] >> 1) | (carry << 63);
+        carry = a.limb[i] & 1;
+        result.limb[i] = new_val;
+    }
+}
+
+// Helper: Divide Fp by 4 (right shift by 2)
+__host__ __device__ static void fp_div_by_4(Fp& result, const Fp& a) {
+    // Divide by 4 by calling fp_div_by_2 twice
+    // This is simpler and more reliable than trying to handle remainders directly
+    Fp temp;
+    fp_div_by_2(temp, a);    // a / 2
+    fp_div_by_2(result, temp);  // (a / 2) / 2 = a / 4
+}
+
+// Check if a is a quadratic residue using Euler's criterion
+// Returns true if a^((p-1)/2) = 1 mod p
+__host__ __device__ bool fp_is_quadratic_residue(const Fp& a) {
+    if (fp_is_zero(a)) {
+        return true;  // 0 is a quadratic residue (0^2 = 0)
+    }
+    
+    const Fp& p = fp_modulus();
+    
+    // Compute (p-1)/2
+    Fp p_minus_1;
+    Fp one;
+    fp_one(one);
+    fp_sub(p_minus_1, p, one);
+    
+    // Divide by 2 using helper
+    Fp exp_direct;
+    fp_div_by_2(exp_direct, p_minus_1);
+    
+    // Compute a^((p-1)/2) mod p
+    Fp result;
+    fp_pow_internal(result, a, exp_direct.limb, FP_LIMBS);
+    
+    // If result == 1, a is a quadratic residue
+    return fp_is_one(result);
+}
+
+// Square root computation
+// For primes p ≡ 3 (mod 4): sqrt(a) = a^((p+1)/4) mod p (if a is a quadratic residue)
+// BLS12-446 has p ≡ 3 (mod 4), so we use the fast method
+__host__ __device__ bool fp_sqrt(Fp& c, const Fp& a) {
+    if (fp_is_zero(a)) {
+        fp_zero(c);
+        return true;  // sqrt(0) = 0
+    }
+    
+    // Check if a is a quadratic residue
+    if (!fp_is_quadratic_residue(a)) {
+        fp_zero(c);
+        return false;  // No square root exists
+    }
+    
+    // For p ≡ 3 (mod 4): sqrt(a) = a^((p+1)/4) mod p
+    // Since p = 4k + 3, we have p+1 = 4(k+1), so (p+1)/4 = k+1
+    // We compute this as: (p-3)/4 + 1 = k + 1
+    const Fp& p = fp_modulus();
+    Fp three, p_minus_3, exp;
+    fp_zero(three);
+    three.limb[0] = 3;
+    // Compute p-3. Since p > 3, (p-3) mod p = p-3
+    fp_sub(p_minus_3, p, three);  // p - 3 = 4k
+    // Divide by 4: (p-3)/4 = k
+    fp_div_by_4(exp, p_minus_3);  // (p-3)/4 = k
+    // Add 1 to get (p+1)/4 = k+1
+    Fp one;
+    fp_one(one);
+    fp_add(exp, exp, one);  // exp = k+1 = (p+1)/4
+    
+    // Compute a^((p+1)/4) mod p
+    // Note: fp_pow_internal already converts result back from Montgomery form
+    fp_pow_internal(c, a, exp.limb, FP_LIMBS);
+    
+    // Verify: c^2 should equal a (mod p)
+    Fp c_squared;
+    fp_mul(c_squared, c, c);
+    
+    // Check if c^2 == a
+    if (fp_cmp(c_squared, a) == 0) {
+        return true;  // Correct square root found
+    }
+    
+    // If not, try the other square root: p - c
+    // In finite fields, if c is a square root, so is p - c
+    Fp alt_c;
+    fp_sub(alt_c, p, c);
+    fp_mul(c_squared, alt_c, alt_c);
+    if (fp_cmp(c_squared, a) == 0) {
+        fp_copy(c, alt_c);
+        return true;
+    }
+    
+    // If verification fails, the computed value might still be correct
+    // but there could be a reduction issue. Try reducing c modulo p if needed.
+    // However, since fp_pow_internal should already return a reduced value,
+    // this shouldn't be necessary. But let's ensure c is properly reduced.
+    if (fp_cmp(c, p) >= 0) {
+        Fp reduced_c;
+        fp_sub(reduced_c, c, p);
+        fp_copy(c, reduced_c);
+        fp_mul(c_squared, c, c);
+        if (fp_cmp(c_squared, a) == 0) {
+            return true;
+        }
+    }
+    
+    // If all checks fail, there's likely a bug in the computation
+    // Return false to indicate failure
+    return false;
 }
 
 // Conditional move: if condition != 0, dst = src

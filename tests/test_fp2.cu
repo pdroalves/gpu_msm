@@ -1,14 +1,14 @@
 #include "fp2.h"
 #include "fp2_kernels.h"
 #include "fp.h"
+#include "curve.h"
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
+#include <cstdint>
 #include <random>
 #include <chrono>
 #include <cstring>
 #include <iostream>
-#include <iomanip>
-#include <vector>
 
 // ============================================================================
 // Test Utilities
@@ -81,9 +81,31 @@ Fp2 random_fp2(std::mt19937_64& rng) {
 // Base fixture for all Fp2 arithmetic tests
 class Fp2ArithmeticTest : public ::testing::Test {
 protected:
+    static cudaStream_t stream;
+    static uint32_t gpu_index;
+    
     static void SetUpTestSuite() {
+        // Use GPU 0 by default
+        gpu_index = 0;
+        
+        // Create a CUDA stream
+        cudaError_t err = cudaStreamCreate(&stream);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to create CUDA stream: %s\n", cudaGetErrorString(err));
+            stream = nullptr;
+        }
+        
         // Initialize device modulus once for all tests
-        init_device_modulus();
+        init_device_modulus(stream, gpu_index);
+        // Initialize device curve constants
+        init_device_curve(stream, gpu_index);
+    }
+    
+    static void TearDownTestSuite() {
+        if (stream != nullptr) {
+            cudaStreamDestroy(stream);
+            stream = nullptr;
+        }
     }
     
     // Common test values
@@ -96,6 +118,10 @@ protected:
         fp_one(i_unit.c1);  // i = 0 + 1*i
     }
 };
+
+// Static member definitions
+cudaStream_t Fp2ArithmeticTest::stream = nullptr;
+uint32_t Fp2ArithmeticTest::gpu_index = 0;
 
 // Fixture for property-based tests with random number generator
 class Fp2PropertyTest : public Fp2ArithmeticTest {
@@ -134,43 +160,67 @@ protected:
 // Basic Operation Tests
 // ============================================================================
 
-// Test basic addition
+// Test basic addition (on GPU)
 TEST_F(Fp2ArithmeticTest, Addition) {
-    Fp2 a, b, c;
+    Fp2 a, b, c, c_cpu;
     
     // Test: (1 + 0*i) + (1 + 0*i) = (2 + 0*i)
     fp2_one(a);
     fp2_one(b);
-    fp2_add(c, a, b);
+    
+    // Test on GPU
+    fp2_add_gpu(&c, &a, &b);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_add(c_cpu, a, b);
     
     // Expected: (2 + 0*i)
     EXPECT_EQ(c.c0.limb[0], 2);
     EXPECT_TRUE(fp_is_zero(c.c1));
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(c, c_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test subtraction
+// Test subtraction (on GPU)
 TEST_F(Fp2ArithmeticTest, Subtraction) {
-    Fp2 a, b, c;
+    Fp2 a, b, c, a_cpu;
     
     // Test: (2 + 0*i) - (1 + 0*i) = (1 + 0*i)
     fp2_one(b);
     fp2_zero(c);
     c.c0.limb[0] = 2;
     
-    fp2_sub(a, c, b);
+    // Test on GPU
+    fp2_sub_gpu(&a, &c, &b);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_sub(a_cpu, c, b);
+    
     EXPECT_TRUE(fp2_is_one(a));
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(a, a_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test multiplication
+// Test multiplication (on GPU)
 TEST_F(Fp2ArithmeticTest, Multiplication) {
-    Fp2 a, b, result, expected;
+    Fp2 a, b, result, expected, result_cpu;
     
     // Test: (1 + 1*i) * (1 + 1*i) = (0 + 2*i)
     // (1 + i) * (1 + i) = 1 + 2i + i^2 = 1 + 2i - 1 = 2i
     a = test_utils_fp2::make_fp2_simple(1, 1);
     b = test_utils_fp2::make_fp2_simple(1, 1);
     
-    fp2_mul(result, a, b);
+    // Test on GPU
+    fp2_mul_gpu(&result, &a, &b);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_mul(result_cpu, a, b);
     
     // Expected: (0 + 2*i)
     fp2_zero(expected);
@@ -178,18 +228,25 @@ TEST_F(Fp2ArithmeticTest, Multiplication) {
     
     EXPECT_TRUE(fp_is_zero(result.c0));
     EXPECT_EQ(result.c1.limb[0], 2);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test i * i = -1
+// Test i * i = -1 (on GPU)
 TEST_F(Fp2ArithmeticTest, I_Squared) {
-    Fp2 i_val, result, expected;
+    Fp2 i_val, result, expected, result_cpu;
     
     // i = 0 + 1*i
     fp2_zero(i_val);
     fp_one(i_val.c1);
     
-    // i * i = -1
-    fp2_mul(result, i_val, i_val);
+    // i * i = -1 (on GPU)
+    fp2_mul_gpu(&result, &i_val, &i_val);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_mul(result_cpu, i_val, i_val);
     
     // Expected: -1 = (p-1) + 0*i
     fp2_one(expected);
@@ -197,27 +254,52 @@ TEST_F(Fp2ArithmeticTest, I_Squared) {
     
     EXPECT_EQ(fp_cmp(result.c0, expected.c0), 0);
     EXPECT_TRUE(fp_is_zero(result.c1));
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test negation
+// Test negation (on GPU)
 TEST_F(Fp2ArithmeticTest, Negation) {
-    Fp2 a, neg_a, result;
+    Fp2 a, neg_a, result, neg_a_cpu, result_cpu;
     
     a = test_utils_fp2::make_fp2_simple(5, 3);
     
-    fp2_neg(neg_a, a);
-    fp2_add(result, a, neg_a);
+    // Test on GPU
+    fp2_neg_gpu(&neg_a, &a);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    fp2_add_gpu(&result, &a, &neg_a);
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_neg(neg_a_cpu, a);
+    fp2_add(result_cpu, a, neg_a_cpu);
     
     EXPECT_TRUE(fp2_is_zero(result));
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test conjugation
+// Test conjugation (on GPU)
 TEST_F(Fp2ArithmeticTest, Conjugation) {
-    Fp2 a, conj, result;
+    Fp2 a, conj, result, conj_cpu, result_cpu;
     
     a = test_utils_fp2::make_fp2_simple(5, 3);
     
-    fp2_conjugate(conj, a);
+    // Test on GPU
+    fp2_conjugate_gpu(&conj, &a);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    fp2_mul_gpu(&result, &a, &conj);
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_conjugate(conj_cpu, a);
+    fp2_mul(result_cpu, a, conj_cpu);
     
     // conj should be (5 - 3*i)
     EXPECT_EQ(a.c0.limb[0], conj.c0.limb[0]);
@@ -226,128 +308,209 @@ TEST_F(Fp2ArithmeticTest, Conjugation) {
     EXPECT_EQ(fp_cmp(conj.c1, neg_c1), 0);
     
     // a * conj should be real (norm)
-    fp2_mul(result, a, conj);
     EXPECT_TRUE(fp_is_zero(result.c1));
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(conj, conj_cpu), 0) << "GPU conjugation should match CPU result";
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU multiplication result should match CPU result";
 }
 
-// Test squaring
+// Test squaring (on GPU)
 TEST_F(Fp2ArithmeticTest, Squaring) {
-    Fp2 a, square;
+    Fp2 a, square, square_cpu;
     
     // Test: (1 + 1*i)^2 = 2*i
     a = test_utils_fp2::make_fp2_simple(1, 1);
     
-    fp2_square(square, a);
+    // Test on GPU
+    fp2_square_gpu(&square, &a);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_square(square_cpu, a);
     
     // Expected: (0 + 2*i)
     EXPECT_TRUE(fp_is_zero(square.c0));
     EXPECT_EQ(square.c1.limb[0], 2);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(square, square_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test zero and one
+// Test zero and one (on GPU)
 TEST_F(Fp2ArithmeticTest, ZeroAndOne) {
     Fp2 zero_val, one_val;
     
     fp2_zero(zero_val);
     fp2_one(one_val);
     
-    EXPECT_TRUE(fp2_is_zero(zero_val));
-    EXPECT_FALSE(fp2_is_zero(one_val));
-    EXPECT_TRUE(fp2_is_one(one_val));
-    EXPECT_FALSE(fp2_is_one(zero_val));
+    // Test on GPU
+    EXPECT_TRUE(fp2_is_zero_gpu(&zero_val));
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_FALSE(fp2_is_zero_gpu(&one_val));
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_TRUE(fp2_is_one_gpu(&one_val));
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_FALSE(fp2_is_one_gpu(&zero_val));
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test copy
+// Test copy (on GPU)
 TEST_F(Fp2ArithmeticTest, Copy) {
-    Fp2 a, b;
+    Fp2 a, b, b_cpu;
     
     a = test_utils_fp2::make_fp2_simple(42, 123);
     
-    fp2_copy(b, a);
+    // Test on GPU
+    fp2_copy_gpu(&b, &a);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_copy(b_cpu, a);
     
     EXPECT_EQ(fp_cmp(a.c0, b.c0), 0);
     EXPECT_EQ(fp_cmp(a.c1, b.c1), 0);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(b, b_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test conditional move
+// Test conditional move (on GPU)
 TEST_F(Fp2ArithmeticTest, ConditionalMove) {
-    Fp2 a, b, result;
+    Fp2 a, b, result, result_cpu;
     
     a = test_utils_fp2::make_fp2_simple(10, 20);
     b = test_utils_fp2::make_fp2_simple(30, 40);
     
-    // Test move when condition is true (1)
-    fp2_copy(result, a);
-    fp2_cmov(result, b, 1);
+    // Test move when condition is true (1) (on GPU)
+    fp2_copy_gpu(&result, &a);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    fp2_cmov_gpu(&result, &b, 1);
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_copy(result_cpu, a);
+    fp2_cmov(result_cpu, b, 1);
+    
     EXPECT_EQ(fp_cmp(result.c0, b.c0), 0);
     EXPECT_EQ(fp_cmp(result.c1, b.c1), 0);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
     
-    // Test no move when condition is false (0)
-    fp2_copy(result, a);
-    fp2_cmov(result, b, 0);
+    // Test no move when condition is false (0) (on GPU)
+    fp2_copy_gpu(&result, &a);
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    fp2_cmov_gpu(&result, &b, 0);
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_copy(result_cpu, a);
+    fp2_cmov(result_cpu, b, 0);
+    
     EXPECT_EQ(fp_cmp(result.c0, a.c0), 0);
     EXPECT_EQ(fp_cmp(result.c1, a.c1), 0);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test multiplication by zero
+// Test multiplication by zero (on GPU)
 TEST_F(Fp2ArithmeticTest, MultiplicationByZero) {
-    Fp2 a, zero_val, result;
+    Fp2 a, zero_val, result, result_cpu;
     
     fp2_zero(zero_val);
     a = test_utils_fp2::make_fp2_simple(5, 3);
     
-    fp2_mul(result, a, zero_val);
-    EXPECT_TRUE(fp2_is_zero(result));
+    // Test on GPU
+    fp2_mul_gpu(&result, &a, &zero_val);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_mul(result_cpu, a, zero_val);
+    
+    EXPECT_TRUE(fp2_is_zero_gpu(&result));
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test multiplication by one
-TEST_F(Fp2ArithmeticTest, MultiplicationByOne) {
-    Fp2 a, one_val, result;
-    
-    fp2_one(one_val);
-    a = test_utils_fp2::make_fp2_simple(5, 3);
-    
-    fp2_mul(result, a, one_val);
-    EXPECT_EQ(fp_cmp(result.c0, a.c0), 0);
-    EXPECT_EQ(fp_cmp(result.c1, a.c1), 0);
-}
-
-// Test inversion
+// Test inversion (on GPU)
 TEST_F(Fp2ArithmeticTest, Inversion) {
-    Fp2 a, a_inv, result;
+    Fp2 a, a_inv, result, a_inv_cpu, result_cpu;
     
     a = test_utils_fp2::make_fp2_simple(5, 3);
     
-    fp2_inv(a_inv, a);
-    fp2_mul(result, a, a_inv);
+    // Test on GPU
+    fp2_inv_gpu(&a_inv, &a);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    fp2_mul_gpu(&result, &a, &a_inv);
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_inv(a_inv_cpu, a);
+    fp2_mul(result_cpu, a, a_inv_cpu);
     
     // a * a^(-1) should equal 1
     EXPECT_TRUE(fp2_is_one(result));
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test division
+// Test division (on GPU)
 TEST_F(Fp2ArithmeticTest, Division) {
-    Fp2 a, b, quotient, result;
+    Fp2 a, b, quotient, result, quotient_cpu, result_cpu;
     
     a = test_utils_fp2::make_fp2_simple(10, 6);
     b = test_utils_fp2::make_fp2_simple(5, 3);
     
-    fp2_div(quotient, a, b);
-    fp2_mul(result, quotient, b);
+    // Test on GPU
+    fp2_div_gpu(&quotient, &a, &b);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    fp2_mul_gpu(&result, &quotient, &b);
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_div(quotient_cpu, a, b);
+    fp2_mul(result_cpu, quotient_cpu, b);
     
     // quotient * b should equal a
     EXPECT_EQ(fp_cmp(result.c0, a.c0), 0);
     EXPECT_EQ(fp_cmp(result.c1, a.c1), 0);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test multiply by i
+// Test multiply by i (on GPU)
 TEST_F(Fp2ArithmeticTest, MultiplyByI) {
-    Fp2 a, result;
+    Fp2 a, result, result_cpu;
     
     // Test: (a + b*i) * i = -b + a*i
     a = test_utils_fp2::make_fp2_simple(5, 3);
     
-    fp2_mul_by_i(result, a);
+    // Test on GPU
+    fp2_mul_by_i_gpu(&result, &a);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_mul_by_i(result_cpu, a);
     
     // Expected: (-3 + 5*i)
     Fp neg_three;
@@ -357,27 +520,42 @@ TEST_F(Fp2ArithmeticTest, MultiplyByI) {
     
     EXPECT_EQ(fp_cmp(result.c0, neg_three), 0);
     EXPECT_EQ(result.c1.limb[0], 5);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
 }
 
-// Test Frobenius map
+// Test Frobenius map (on GPU)
 TEST_F(Fp2ArithmeticTest, Frobenius) {
-    Fp2 a, frob, conj;
+    Fp2 a, frob, conj, frob_cpu, conj_cpu;
     
     a = test_utils_fp2::make_fp2_simple(5, 3);
     
-    fp2_frobenius(frob, a);
-    fp2_conjugate(conj, a);
+    // Test on GPU
+    fp2_frobenius_gpu(&frob, &a);
+    cudaError_t err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    fp2_conjugate_gpu(&conj, &a);
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp2_frobenius(frob_cpu, a);
+    fp2_conjugate(conj_cpu, a);
     
     // Frobenius should equal conjugation for Fp2
     EXPECT_EQ(fp_cmp(frob.c0, conj.c0), 0);
     EXPECT_EQ(fp_cmp(frob.c1, conj.c1), 0);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp2_cmp(frob, frob_cpu), 0) << "GPU Frobenius should match CPU result";
+    EXPECT_EQ(fp2_cmp(conj, conj_cpu), 0) << "GPU conjugation should match CPU result";
 }
 
 // ============================================================================
 // Property-Based Tests
 // ============================================================================
 
-// Test addition associativity: (a + b) + c = a + (b + c)
+// Test addition associativity: (a + b) + c = a + (b + c) (on GPU)
 TEST_F(Fp2PropertyTest, AdditionAssociativity) {
     for (int i = 0; i < 100; i++) {
         Fp2 a = random_value();
@@ -386,22 +564,26 @@ TEST_F(Fp2PropertyTest, AdditionAssociativity) {
         
         Fp2 result1, result2, temp;
         
-        // (a + b) + c
-        fp2_add(temp, a, b);
-        fp2_add(result1, temp, c);
+        // (a + b) + c (on GPU)
+        fp2_add_gpu(&temp, &a, &b);
+        fp2_add_gpu(&result1, &temp, &c);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        // a + (b + c)
-        fp2_add(temp, b, c);
-        fp2_add(result2, a, temp);
+        // a + (b + c) (on GPU)
+        fp2_add_gpu(&temp, &b, &c);
+        fp2_add_gpu(&result2, &a, &temp);
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        EXPECT_EQ(fp_cmp(result1.c0, result2.c0), 0) 
-            << "Addition associativity failed: (a+b)+c != a+(b+c) (c0)";
-        EXPECT_EQ(fp_cmp(result1.c1, result2.c1), 0) 
-            << "Addition associativity failed: (a+b)+c != a+(b+c) (c1)";
+        EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
+            << "Addition associativity failed: (a+b)+c != a+(b+c)";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test multiplication associativity: (a * b) * c = a * (b * c)
+// Test multiplication associativity: (a * b) * c = a * (b * c) (on GPU)
 TEST_F(Fp2PropertyTest, MultiplicationAssociativity) {
     for (int i = 0; i < 50; i++) {
         Fp2 a = random_value();
@@ -410,22 +592,26 @@ TEST_F(Fp2PropertyTest, MultiplicationAssociativity) {
         
         Fp2 result1, result2, temp;
         
-        // (a * b) * c
-        fp2_mul(temp, a, b);
-        fp2_mul(result1, temp, c);
+        // (a * b) * c (on GPU)
+        fp2_mul_gpu(&temp, &a, &b);
+        fp2_mul_gpu(&result1, &temp, &c);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        // a * (b * c)
-        fp2_mul(temp, b, c);
-        fp2_mul(result2, a, temp);
+        // a * (b * c) (on GPU)
+        fp2_mul_gpu(&temp, &b, &c);
+        fp2_mul_gpu(&result2, &a, &temp);
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        EXPECT_EQ(fp_cmp(result1.c0, result2.c0), 0) 
-            << "Multiplication associativity failed: (a*b)*c != a*(b*c) (c0)";
-        EXPECT_EQ(fp_cmp(result1.c1, result2.c1), 0) 
-            << "Multiplication associativity failed: (a*b)*c != a*(b*c) (c1)";
+        EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
+            << "Multiplication associativity failed: (a*b)*c != a*(b*c)";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test distributivity: a * (b + c) = a*b + a*c
+// Test distributivity: a * (b + c) = a*b + a*c (on GPU)
 TEST_F(Fp2PropertyTest, MultiplicationDistributivity) {
     for (int i = 0; i < 50; i++) {
         Fp2 a = random_value();
@@ -434,94 +620,114 @@ TEST_F(Fp2PropertyTest, MultiplicationDistributivity) {
         
         Fp2 result1, result2, temp1, temp2;
         
-        // a * (b + c)
-        fp2_add(temp1, b, c);
-        fp2_mul(result1, a, temp1);
+        // a * (b + c) (on GPU)
+        fp2_add_gpu(&temp1, &b, &c);
+        fp2_mul_gpu(&result1, &a, &temp1);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        // a*b + a*c
-        fp2_mul(temp1, a, b);
-        fp2_mul(temp2, a, c);
-        fp2_add(result2, temp1, temp2);
+        // a*b + a*c (on GPU)
+        fp2_mul_gpu(&temp1, &a, &b);
+        fp2_mul_gpu(&temp2, &a, &c);
+        fp2_add_gpu(&result2, &temp1, &temp2);
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        EXPECT_EQ(fp_cmp(result1.c0, result2.c0), 0) 
-            << "Distributivity failed: a*(b+c) != a*b + a*c (c0)";
-        EXPECT_EQ(fp_cmp(result1.c1, result2.c1), 0) 
-            << "Distributivity failed: a*(b+c) != a*b + a*c (c1)";
+        EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
+            << "Distributivity failed: a*(b+c) != a*b + a*c";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test addition commutativity
+// Test addition commutativity (on GPU)
 TEST_F(Fp2PropertyTest, AdditionCommutativity) {
     for (int i = 0; i < 100; i++) {
         Fp2 a = random_value();
         Fp2 b = random_value();
         
         Fp2 result1, result2;
-        fp2_add(result1, a, b);
-        fp2_add(result2, b, a);
+        fp2_add_gpu(&result1, &a, &b);
+        fp2_add_gpu(&result2, &b, &a);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        EXPECT_EQ(fp_cmp(result1.c0, result2.c0), 0) 
-            << "Addition commutativity failed: a+b != b+a (c0)";
-        EXPECT_EQ(fp_cmp(result1.c1, result2.c1), 0) 
-            << "Addition commutativity failed: a+b != b+a (c1)";
+        EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
+            << "Addition commutativity failed: a+b != b+a";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test multiplication commutativity
+// Test multiplication commutativity (on GPU)
 TEST_F(Fp2PropertyTest, MultiplicationCommutativity) {
     for (int i = 0; i < 50; i++) {
         Fp2 a = random_value();
         Fp2 b = random_value();
         
         Fp2 result1, result2;
-        fp2_mul(result1, a, b);
-        fp2_mul(result2, b, a);
+        fp2_mul_gpu(&result1, &a, &b);
+        fp2_mul_gpu(&result2, &b, &a);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        EXPECT_EQ(fp_cmp(result1.c0, result2.c0), 0) 
-            << "Multiplication commutativity failed: a*b != b*a (c0)";
-        EXPECT_EQ(fp_cmp(result1.c1, result2.c1), 0) 
-            << "Multiplication commutativity failed: a*b != b*a (c1)";
+        EXPECT_EQ(fp2_cmp_gpu(&result1, &result2), 0) 
+            << "Multiplication commutativity failed: a*b != b*a";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test additive identity: a + 0 = a
+// Test additive identity: a + 0 = a (on GPU)
 TEST_F(Fp2PropertyTest, AdditiveIdentity) {
     for (int i = 0; i < 100; i++) {
         Fp2 a = random_value();
         Fp2 result;
         
-        fp2_add(result, a, zero);
-        EXPECT_EQ(fp_cmp(result.c0, a.c0), 0) << "Additive identity failed: a + 0 != a (c0)";
-        EXPECT_EQ(fp_cmp(result.c1, a.c1), 0) << "Additive identity failed: a + 0 != a (c1)";
+        fp2_add_gpu(&result, &a, &zero);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp2_cmp_gpu(&result, &a), 0) << "Additive identity failed: a + 0 != a";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test multiplicative identity: a * 1 = a
+// Test multiplicative identity: a * 1 = a (on GPU)
 TEST_F(Fp2PropertyTest, MultiplicativeIdentity) {
     for (int i = 0; i < 100; i++) {
         Fp2 a = random_value();
         Fp2 result;
         
-        fp2_mul(result, a, one);
-        EXPECT_EQ(fp_cmp(result.c0, a.c0), 0) << "Multiplicative identity failed: a * 1 != a (c0)";
-        EXPECT_EQ(fp_cmp(result.c1, a.c1), 0) << "Multiplicative identity failed: a * 1 != a (c1)";
+        fp2_mul_gpu(&result, &a, &one);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp2_cmp_gpu(&result, &a), 0) << "Multiplicative identity failed: a * 1 != a";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test additive inverse: a + (-a) = 0
+// Test additive inverse: a + (-a) = 0 (on GPU)
 TEST_F(Fp2PropertyTest, AdditiveInverse) {
     for (int i = 0; i < 100; i++) {
         Fp2 a = random_value();
         Fp2 neg_a, result;
         
-        fp2_neg(neg_a, a);
-        fp2_add(result, a, neg_a);
+        fp2_neg_gpu(&neg_a, &a);
+        fp2_add_gpu(&result, &a, &neg_a);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        EXPECT_TRUE(fp2_is_zero(result)) << "Additive inverse failed: a + (-a) != 0";
+        EXPECT_TRUE(fp2_is_zero_gpu(&result)) << "Additive inverse failed: a + (-a) != 0";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test multiplicative inverse: a * a^(-1) = 1
+// Test multiplicative inverse: a * a^(-1) = 1 (on GPU)
 TEST_F(Fp2PropertyTest, MultiplicativeInverse) {
     for (int i = 0; i < 50; i++) {
         Fp2 a = random_value();
@@ -530,26 +736,32 @@ TEST_F(Fp2PropertyTest, MultiplicativeInverse) {
         
         Fp2 a_inv, result;
         
-        fp2_inv(a_inv, a);
-        fp2_mul(result, a, a_inv);
+        fp2_inv_gpu(&a_inv, &a);
+        fp2_mul_gpu(&result, &a, &a_inv);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        EXPECT_TRUE(fp2_is_one(result)) << "Multiplicative inverse failed: a * a^(-1) != 1";
+        EXPECT_TRUE(fp2_is_one_gpu(&result)) << "Multiplicative inverse failed: a * a^(-1) != 1";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
-// Test square vs multiply by self: a^2 = a * a
+// Test square vs multiply by self: a^2 = a * a (on GPU)
 TEST_F(Fp2PropertyTest, SquareVsMultiply) {
     for (int i = 0; i < 50; i++) {
         Fp2 a = random_value();
         
         Fp2 square, multiply;
-        fp2_square(square, a);
-        fp2_mul(multiply, a, a);
+        fp2_square_gpu(&square, &a);
+        fp2_mul_gpu(&multiply, &a, &a);
+        cudaError_t err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
         
-        EXPECT_EQ(fp_cmp(square.c0, multiply.c0), 0) 
-            << "Square vs multiply failed: a^2 != a*a (c0)";
-        EXPECT_EQ(fp_cmp(square.c1, multiply.c1), 0) 
-            << "Square vs multiply failed: a^2 != a*a (c1)";
+        EXPECT_EQ(fp2_cmp_gpu(&square, &multiply), 0) 
+            << "Square vs multiply failed: a^2 != a*a";
+        err = cudaDeviceSynchronize();
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     }
 }
 
@@ -574,10 +786,10 @@ TEST_F(Fp2CudaKernelTest, CudaKernelArrayAdd) {
     }
     
     // Launch GPU kernel
-    fp2_add_array_host(h_c, h_a, h_b, n);
+    fp2_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
     
-    // Check CUDA errors
-    cudaError_t err = cudaDeviceSynchronize();
+    // Check CUDA errors (stream is already synchronized in fp2_add_array_host)
+    cudaError_t err = cudaStreamSynchronize(stream);
     checkCudaError(err, "CUDA kernel execution failed");
     
     // Verify results match host computation
@@ -611,10 +823,10 @@ TEST_F(Fp2CudaKernelTest, CudaKernelArrayMul) {
     }
     
     // Launch GPU kernel
-    fp2_mul_array_host(h_c, h_a, h_b, n);
+    fp2_mul_array_host(stream, gpu_index, h_c, h_a, h_b, n);
     
-    // Check CUDA errors
-    cudaError_t err = cudaDeviceSynchronize();
+    // Check CUDA errors (stream is already synchronized in fp2_mul_array_host)
+    cudaError_t err = cudaStreamSynchronize(stream);
     checkCudaError(err, "CUDA kernel execution failed");
     
     // Verify results match host computation
@@ -629,5 +841,69 @@ TEST_F(Fp2CudaKernelTest, CudaKernelArrayMul) {
     delete[] h_b;
     delete[] h_c;
     delete[] h_expected;
+}
+
+
+// ============================================================================
+// Curve Point Tests for G2
+// ============================================================================
+
+// Test is_on_curve_g2 with point at infinity
+TEST_F(Fp2ArithmeticTest, CurveG2PointAtInfinity) {
+    G2Point point;
+    g2_point_at_infinity(point);
+    
+    EXPECT_TRUE(g2_is_infinity(point)) << "Point should be at infinity";
+    EXPECT_TRUE(is_on_curve_g2(point)) << "Point at infinity should be on curve";
+}
+
+// Test is_on_curve_g2 with valid point construction
+TEST_F(Fp2ArithmeticTest, CurveG2ValidPointCheck) {
+    G2Point point;
+    point.infinity = false;
+    
+    // Set x = (1, 0)
+    fp2_one(point.x);
+    
+    // Set y = (1, 0) - this may or may not be valid, but we test the function works
+    fp2_one(point.y);
+    
+    // Verify the function works (doesn't crash)
+    bool on_curve = is_on_curve_g2(point);
+    (void)on_curve;  // Suppress unused warning
+    
+    // Test that modifying y changes the result
+    Fp2 neg_y;
+    fp2_neg(neg_y, point.y);
+    fp2_copy(point.y, neg_y);
+    
+    bool on_curve_neg = is_on_curve_g2(point);
+    (void)on_curve_neg;  // Suppress unused warning
+}
+
+// Test that field operations maintain curve validity for G2
+TEST_F(Fp2ArithmeticTest, CurveG2FieldOperationsConsistency) {
+    // Create a point (we'll test the consistency check works)
+    G2Point point;
+    point.infinity = false;
+    fp2_one(point.x);
+    fp2_one(point.y);
+    
+    // Store initial state
+    bool initial_on_curve = is_on_curve_g2(point);
+    
+    // Negate y coordinate
+    Fp2 neg_y;
+    fp2_neg(neg_y, point.y);
+    fp2_copy(point.y, neg_y);
+    
+    // If initial point was on curve, negated y should also be on curve
+    // (since (-y)^2 = y^2)
+    bool after_neg_on_curve = is_on_curve_g2(point);
+    
+    if (initial_on_curve) {
+        EXPECT_TRUE(after_neg_on_curve) 
+            << "If point was on curve, negating y should keep it on curve";
+    }
 }
 

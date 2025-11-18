@@ -4,6 +4,7 @@
 #include <benchmark/benchmark.h>
 #include <random>
 #include <cuda_runtime.h>
+#include <cstdint>
 
 // Helper to get modulus (duplicated from test utilities)
 static Fp get_modulus() {
@@ -18,11 +19,24 @@ static Fp get_modulus() {
     return p;
 }
 
-// Initialize device modulus
+// Global stream and gpu_index for benchmarks
+static cudaStream_t g_benchmark_stream = nullptr;
+static uint32_t g_gpu_index = 0;
+
+// Initialize device modulus and create stream
 static void init_benchmark() {
     static bool initialized = false;
     if (!initialized) {
-        init_device_modulus();
+        g_gpu_index = 0;
+        
+        // Create a CUDA stream
+        cudaError_t err = cudaStreamCreate(&g_benchmark_stream);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to create CUDA stream: %s\n", cudaGetErrorString(err));
+            g_benchmark_stream = nullptr;
+        }
+        
+        init_device_modulus(g_benchmark_stream, g_gpu_index);
         initialized = true;
     }
 }
@@ -209,7 +223,7 @@ static void BM_Fp2_GPU_ArrayAdd(benchmark::State& state) {
     }
     
     for (auto _ : state) {
-        fp2_add_array_host(h_c, h_a, h_b, n);
+        fp2_add_array_host(g_benchmark_stream, g_gpu_index, h_c, h_a, h_b, n);
         benchmark::DoNotOptimize(h_c);
     }
     
@@ -240,7 +254,7 @@ static void BM_Fp2_GPU_ArrayMul(benchmark::State& state) {
     }
     
     for (auto _ : state) {
-        fp2_mul_array_host(h_c, h_a, h_b, n);
+        fp2_mul_array_host(g_benchmark_stream, g_gpu_index, h_c, h_a, h_b, n);
         benchmark::DoNotOptimize(h_c);
     }
     

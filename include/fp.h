@@ -26,8 +26,10 @@ extern __constant__ Fp DEVICE_R_INV;
 extern __constant__ uint64_t DEVICE_P_PRIME;
 
 // Host-side initialization function
-// Call this once before using device code
-void init_device_modulus();
+// Call this once per device before using device code
+// stream: CUDA stream to use (can be nullptr for default stream synchronization)
+// gpu_index: GPU device index to use
+void init_device_modulus(cudaStream_t stream, uint32_t gpu_index);
 
 // Multi-precision arithmetic operations
 // All operations are CUDA-compatible (can be called from host or device)
@@ -89,6 +91,16 @@ __host__ __device__ void fp_to_montgomery(Fp& c, const Fp& a);
 // Convert from Montgomery form: c = (a * R_INV) mod p
 __host__ __device__ void fp_from_montgomery(Fp& c, const Fp& a);
 
+// Batch conversion to Montgomery form: dst[i] = (src[i] * R) mod p
+// More efficient than calling fp_to_montgomery in a loop
+// For CUDA: can be called from host or device, but arrays must be in same memory space
+__host__ __device__ void fp_to_montgomery_batch(Fp* dst, const Fp* src, int n);
+
+// Batch conversion from Montgomery form: dst[i] = (src[i] * R_INV) mod p
+// More efficient than calling fp_from_montgomery in a loop
+// For CUDA: can be called from host or device, but arrays must be in same memory space
+__host__ __device__ void fp_from_montgomery_batch(Fp* dst, const Fp* src, int n);
+
 // Multiplication with modular reduction: c = (a * b) mod p
 // NOTE: This now uses Montgomery form internally
 // For external API, use fp_mont_mul if values are already in Montgomery form
@@ -96,6 +108,36 @@ __host__ __device__ void fp_mul(Fp& c, const Fp& a, const Fp& b);
 
 // Negation: c = -a mod p
 __host__ __device__ void fp_neg(Fp& c, const Fp& a);
+
+// Inversion: c = a^(-1) mod p
+// Uses Fermat's little theorem: a^(p-2) = a^(-1) mod p
+// Returns c = 0 if a = 0 (division by zero)
+__host__ __device__ void fp_inv(Fp& c, const Fp& a);
+
+// Division: c = a / b mod p = a * b^(-1) mod p
+// Returns c = 0 if b = 0 (division by zero)
+__host__ __device__ void fp_div(Fp& c, const Fp& a, const Fp& b);
+
+// Exponentiation: c = a^e mod p
+// e is represented as a big integer in little-endian format (limb[0] is LSB)
+// e_limbs is the number of limbs in the exponent (at most FP_LIMBS)
+// For exponents larger than 448 bits, only the lower 448 bits are used
+__host__ __device__ void fp_pow(Fp& c, const Fp& a, const uint64_t* e, int e_limbs);
+
+// Exponentiation with 64-bit exponent: c = a^e mod p
+__host__ __device__ void fp_pow_u64(Fp& c, const Fp& a, uint64_t e);
+
+// Square root: c = sqrt(a) mod p if a is a quadratic residue
+// Returns true if a is a quadratic residue (square root exists), false otherwise
+// If false, c is set to 0
+// For primes p ≡ 3 (mod 4): sqrt(a) = a^((p+1)/4) mod p
+// For other primes, uses Tonelli-Shanks algorithm
+__host__ __device__ bool fp_sqrt(Fp& c, const Fp& a);
+
+// Check if a is a quadratic residue (has a square root)
+// Returns true if a is a quadratic residue, false otherwise
+// Uses Euler's criterion: a is a quadratic residue if a^((p-1)/2) = 1 mod p
+__host__ __device__ bool fp_is_quadratic_residue(const Fp& a);
 
 // Conditional assignment: if condition, dst = src, else dst unchanged
 __host__ __device__ void fp_cmov(Fp& dst, const Fp& src, uint64_t condition);

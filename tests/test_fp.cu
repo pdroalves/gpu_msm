@@ -1,201 +1,23 @@
 #include "fp.h"
 #include "fp_kernels.h"
+#include "curve.h"
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
-
-// Test fixture for Fp arithmetic tests
-class FpArithmeticTest : public ::testing::Test {
-protected:
-    static void SetUpTestSuite() {
-        // Initialize device modulus once for all tests
-        init_device_modulus();
-    }
-};
-
-// Test basic addition
-TEST_F(FpArithmeticTest, Addition) {
-    Fp a, b, c;
-    
-    // Test: 1 + 1 = 2
-    fp_one(a);
-    fp_one(b);
-    fp_add(c, a, b);
-    
-    EXPECT_EQ(c.limb[0], 2);
-    for (int i = 1; i < FP_LIMBS; i++) {
-        EXPECT_EQ(c.limb[i], 0);
-    }
-}
-
-// Test subtraction
-TEST_F(FpArithmeticTest, Subtraction) {
-    Fp a, b, c;
-    
-    // Test: 2 - 1 = 1
-    fp_one(b);
-    fp_zero(c);
-    c.limb[0] = 2;
-    
-    fp_sub(a, c, b);
-    EXPECT_TRUE(fp_is_one(a));
-}
-
-// Test multiplication
-TEST_F(FpArithmeticTest, Multiplication) {
-    Fp five, three, result, expected;
-    
-    fp_zero(five);
-    fp_zero(three);
-    fp_zero(expected);
-    five.limb[0] = 5;
-    three.limb[0] = 3;
-    expected.limb[0] = 15;
-    
-    fp_mul(result, five, three);
-    EXPECT_EQ(fp_cmp(result, expected), 0);
-}
-
-// Test negation
-TEST_F(FpArithmeticTest, Negation) {
-    Fp a, neg_a, result;
-    
-    fp_zero(a);
-    a.limb[0] = 5;
-    
-    fp_neg(neg_a, a);
-    fp_add(result, a, neg_a);
-    
-    EXPECT_TRUE(fp_is_zero(result));
-}
-
-// Test Montgomery conversion round-trip
-TEST_F(FpArithmeticTest, MontgomeryRoundTrip) {
-    Fp value, mont_form, back;
-    
-    fp_zero(value);
-    value.limb[0] = 5;
-    
-    fp_to_montgomery(mont_form, value);
-    fp_from_montgomery(back, mont_form);
-    
-    EXPECT_EQ(fp_cmp(back, value), 0);
-}
-
-// Test Montgomery multiplication
-TEST_F(FpArithmeticTest, MontgomeryMultiplication) {
-    Fp five, three, five_m, three_m, result_m, result, expected;
-    
-    fp_zero(five);
-    fp_zero(three);
-    fp_zero(expected);
-    five.limb[0] = 5;
-    three.limb[0] = 3;
-    expected.limb[0] = 15;
-    
-    // Convert to Montgomery form
-    fp_to_montgomery(five_m, five);
-    fp_to_montgomery(three_m, three);
-    
-    // Multiply in Montgomery form
-    fp_mont_mul(result_m, five_m, three_m);
-    
-    // Convert back
-    fp_from_montgomery(result, result_m);
-    
-    EXPECT_EQ(fp_cmp(result, expected), 0);
-}
-
-// Test comparison operations
-TEST_F(FpArithmeticTest, Comparison) {
-    Fp five, three;
-    
-    fp_zero(five);
-    fp_zero(three);
-    five.limb[0] = 5;
-    three.limb[0] = 3;
-    
-    EXPECT_GT(fp_cmp(five, three), 0);  // 5 > 3
-    EXPECT_LT(fp_cmp(three, five), 0);  // 3 < 5
-    EXPECT_EQ(fp_cmp(five, five), 0);   // 5 == 5
-}
-
-// Test zero and one
-TEST_F(FpArithmeticTest, ZeroAndOne) {
-    Fp zero, one;
-    
-    fp_zero(zero);
-    fp_one(one);
-    
-    EXPECT_TRUE(fp_is_zero(zero));
-    EXPECT_FALSE(fp_is_zero(one));
-    EXPECT_TRUE(fp_is_one(one));
-    EXPECT_FALSE(fp_is_one(zero));
-}
-
-// Test copy
-TEST_F(FpArithmeticTest, Copy) {
-    Fp a, b;
-    
-    fp_zero(a);
-    a.limb[0] = 42;
-    a.limb[1] = 123;
-    
-    fp_copy(b, a);
-    
-    EXPECT_EQ(fp_cmp(a, b), 0);
-}
-
-// Test conditional move
-TEST_F(FpArithmeticTest, ConditionalMove) {
-    Fp a, b, result;
-    
-    fp_zero(a);
-    fp_zero(b);
-    a.limb[0] = 10;
-    b.limb[0] = 20;
-    
-    // Test move when condition is true (1)
-    fp_copy(result, a);
-    fp_cmov(result, b, 1);
-    EXPECT_EQ(fp_cmp(result, b), 0);
-    
-    // Test no move when condition is false (0)
-    fp_copy(result, a);
-    fp_cmov(result, b, 0);
-    EXPECT_EQ(fp_cmp(result, a), 0);
-}
-
-// Test multiplication by zero
-TEST_F(FpArithmeticTest, MultiplicationByZero) {
-    Fp a, zero, result;
-    
-    fp_zero(zero);
-    fp_zero(a);
-    a.limb[0] = 5;
-    
-    fp_mul(result, a, zero);
-    EXPECT_TRUE(fp_is_zero(result));
-}
-
-// Test multiplication by one
-TEST_F(FpArithmeticTest, MultiplicationByOne) {
-    Fp a, one, result;
-    
-    fp_one(one);
-    fp_zero(a);
-    a.limb[0] = 5;
-    
-    fp_mul(result, a, one);
-    EXPECT_EQ(fp_cmp(result, a), 0);
-}
+#include <cstdint>
+#include <random>
+#include <chrono>
+#include <cstring>
+#include <iostream>
 
 // ============================================================================
-// Hardcoded Large Value Tests - Testing with values near modulus
+// Test Utilities
 // ============================================================================
+
+namespace test_utils {
 
 // Helper to create Fp from hex values (little-endian limbs)
-static Fp make_fp(uint64_t l0, uint64_t l1, uint64_t l2, uint64_t l3,
-                  uint64_t l4, uint64_t l5, uint64_t l6) {
+Fp make_fp(uint64_t l0, uint64_t l1, uint64_t l2, uint64_t l3,
+           uint64_t l4, uint64_t l5, uint64_t l6) {
     Fp result;
     result.limb[0] = l0;
     result.limb[1] = l1;
@@ -207,35 +29,1014 @@ static Fp make_fp(uint64_t l0, uint64_t l1, uint64_t l2, uint64_t l3,
     return result;
 }
 
-// Test 1: Addition that doesn't overflow
+// Get the modulus p
+Fp get_modulus() {
+    return make_fp(0x311c0026aab0aaabULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
+                   0x0f75a64bbac71602ULL, 0x0095a4b78a02fe32ULL, 0x200fc34965aad640ULL, 0x3cdee0fb28c5e535ULL);
+}
+
+// Get p - 1
+Fp get_modulus_minus_one() {
+    return make_fp(0x311c0026aab0aaaaULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
+                   0x0f75a64bbac71602ULL, 0x0095a4b78a02fe32ULL, 0x200fc34965aad640ULL, 0x3cdee0fb28c5e535ULL);
+}
+
+// Get p - 2
+Fp get_modulus_minus_two() {
+    Fp p_minus_1 = get_modulus_minus_one();
+    Fp one;
+    fp_one(one);
+    Fp p_minus_2;
+    fp_sub(p_minus_2, p_minus_1, one);
+    return p_minus_2;
+}
+
+// Check if a < p
+bool is_valid_fp(const Fp& a) {
+    Fp p = get_modulus();
+    return fp_cmp(a, p) < 0;
+}
+
+// Generate a random Fp value in [0, p-1]
+// Uses a simple rejection sampling approach
+Fp random_fp(std::mt19937_64& rng) {
+    Fp result;
+    Fp p = get_modulus();
+    
+    // Generate random limbs, ensuring result < p
+    // We'll generate random values and reduce if needed
+    for (int i = 0; i < FP_LIMBS; i++) {
+        result.limb[i] = rng();
+    }
+    
+    // If result >= p, reduce it
+    if (fp_cmp(result, p) >= 0) {
+        // Subtract p until result < p
+        while (fp_cmp(result, p) >= 0) {
+            Fp reduced;
+            fp_sub_raw(reduced, result, p);
+            fp_copy(result, reduced);
+        }
+    }
+    
+    return result;
+}
+
+// Generate a random Fp value in [0, max]
+Fp random_fp_bounded(std::mt19937_64& rng, const Fp& max) {
+    Fp result = random_fp(rng);
+    // If result > max, reduce modulo (max + 1)
+    // For simplicity, just generate again if too large
+    // (This is not perfect but works for testing)
+    if (fp_cmp(result, max) > 0) {
+        // Use modulo operation: result = result mod (max + 1)
+        // For testing, we'll just generate a new one
+        // In practice, you'd want proper modular reduction
+        return random_fp_bounded(rng, max);
+    }
+    return result;
+}
+
+// Create Fp from a small integer (0 <= val < 2^64)
+Fp from_uint64(uint64_t val) {
+    Fp result;
+    fp_zero(result);
+    result.limb[0] = val;
+    return result;
+}
+
+// Create Fp with all limbs set to max value
+Fp max_limb_fp() {
+    Fp result;
+    for (int i = 0; i < FP_LIMBS; i++) {
+        result.limb[i] = UINT64_MAX;
+    }
+    // Reduce if needed - keep subtracting p until result < p
+    Fp p = get_modulus();
+    while (fp_cmp(result, p) >= 0) {
+        Fp reduced;
+        fp_sub_raw(reduced, result, p);
+        fp_copy(result, reduced);
+    }
+    return result;
+}
+
+// Create Fp with alternating bit pattern
+Fp alternating_bits_fp() {
+    Fp result;
+    for (int i = 0; i < FP_LIMBS; i++) {
+        result.limb[i] = (i % 2 == 0) ? 0xAAAAAAAAAAAAAAAAULL : 0x5555555555555555ULL;
+    }
+    // Reduce if needed - keep subtracting p until result < p
+    Fp p = get_modulus();
+    while (fp_cmp(result, p) >= 0) {
+        Fp reduced;
+        fp_sub_raw(reduced, result, p);
+        fp_copy(result, reduced);
+    }
+    return result;
+}
+
+// Better comparison helper with detailed error message
+::testing::AssertionResult AssertFpEqual(const char* a_expr, const char* b_expr,
+                                         const Fp& a, const Fp& b) {
+    if (fp_cmp(a, b) == 0) {
+        return ::testing::AssertionSuccess();
+    }
+    
+    ::testing::AssertionResult result = ::testing::AssertionFailure()
+        << "Expected equality of these values:\n"
+        << "  " << a_expr << "\n"
+        << "    Which is: ";
+    for (int i = FP_LIMBS - 1; i >= 0; i--) {
+        result << std::hex << "0x" << a.limb[i];
+        if (i > 0) result << " ";
+    }
+    result << "\n"
+        << "  " << b_expr << "\n"
+        << "    Which is: ";
+    for (int i = FP_LIMBS - 1; i >= 0; i--) {
+        result << std::hex << "0x" << b.limb[i];
+        if (i > 0) result << " ";
+    }
+    return result;
+}
+
+} // namespace test_utils
+
+// ============================================================================
+// Test Fixtures
+// ============================================================================
+
+// Base fixture for all Fp arithmetic tests
+class FpArithmeticTest : public ::testing::Test {
+protected:
+    static cudaStream_t stream;
+    static uint32_t gpu_index;
+    
+    static void SetUpTestSuite() {
+        // Use GPU 0 by default
+        gpu_index = 0;
+        
+        // Create a CUDA stream
+        cudaError_t err = cudaStreamCreate(&stream);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to create CUDA stream: %s\n", cudaGetErrorString(err));
+            stream = nullptr;
+        }
+        
+        // Initialize device modulus once for all tests
+        init_device_modulus(stream, gpu_index);
+        // Initialize device curve constants
+        init_device_curve(stream, gpu_index);
+    }
+    
+    static void TearDownTestSuite() {
+        if (stream != nullptr) {
+            cudaStreamDestroy(stream);
+            stream = nullptr;
+        }
+    }
+    
+    // Common test values
+    Fp zero, one, two;
+    Fp modulus, modulus_minus_one, modulus_minus_two;
+    
+    void SetUp() override {
+        fp_zero(zero);
+        fp_one(one);
+        fp_zero(two);
+        two.limb[0] = 2;
+        
+        modulus = test_utils::get_modulus();
+        modulus_minus_one = test_utils::get_modulus_minus_one();
+        modulus_minus_two = test_utils::get_modulus_minus_two();
+    }
+};
+
+// Static member definitions
+cudaStream_t FpArithmeticTest::stream = nullptr;
+uint32_t FpArithmeticTest::gpu_index = 0;
+
+// Fixture for property-based tests with random number generator
+class FpPropertyTest : public FpArithmeticTest {
+protected:
+    std::mt19937_64 rng;
+    
+    void SetUp() override {
+        FpArithmeticTest::SetUp();
+        // Seed with current time for reproducibility in tests
+        rng.seed(42);  // Fixed seed for reproducibility
+    }
+    
+    Fp random_value() {
+        return test_utils::random_fp(rng);
+    }
+};
+
+// Fixture for edge case tests
+class FpEdgeCaseTest : public FpArithmeticTest {
+protected:
+    Fp max_limb_value;
+    Fp alternating_bits;
+    std::mt19937_64 rng;
+    
+    void SetUp() override {
+        FpArithmeticTest::SetUp();
+        rng.seed(42);  // Fixed seed for reproducibility
+        max_limb_value = test_utils::max_limb_fp();
+        alternating_bits = test_utils::alternating_bits_fp();
+    }
+};
+
+
+// Fixture for CUDA kernel tests
+class FpCudaKernelTest : public FpArithmeticTest {
+protected:
+    std::mt19937_64 rng;
+    
+    void SetUp() override {
+        FpArithmeticTest::SetUp();
+        rng.seed(42);  // Fixed seed for reproducibility
+    }
+    
+    // Helper to check CUDA errors
+    void checkCudaError(cudaError_t err, const char* msg) {
+        if (err != cudaSuccess) {
+            FAIL() << msg << ": " << cudaGetErrorString(err);
+        }
+    }
+};
+
+// Test basic addition (on GPU)
+TEST_F(FpArithmeticTest, Addition) {
+    Fp a, b, c, c_cpu;
+    
+    // Test: 1 + 1 = 2
+    fp_one(a);
+    fp_one(b);
+    
+    // Test on GPU
+    fp_add_gpu(stream, gpu_index, &c, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_add(c_cpu, a, b);
+    
+    EXPECT_EQ(c.limb[0], 2);
+    for (int i = 1; i < FP_LIMBS; i++) {
+        EXPECT_EQ(c.limb[i], 0);
+    }
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp_cmp(c, c_cpu), 0) << "GPU result should match CPU result";
+}
+
+// Test subtraction (on GPU)
+TEST_F(FpArithmeticTest, Subtraction) {
+    Fp a, b, c, a_cpu;
+    
+    // Test: 2 - 1 = 1
+    fp_one(b);
+    fp_zero(c);
+    c.limb[0] = 2;
+    
+    // Test on GPU
+    fp_sub_gpu(stream, gpu_index, &a, &c, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_sub(a_cpu, c, b);
+    
+    EXPECT_TRUE(fp_is_one(a));
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp_cmp(a, a_cpu), 0) << "GPU result should match CPU result";
+}
+
+// Test multiplication (on GPU)
+TEST_F(FpArithmeticTest, Multiplication) {
+    Fp five, three, result, expected, result_cpu;
+    
+    fp_zero(five);
+    fp_zero(three);
+    fp_zero(expected);
+    five.limb[0] = 5;
+    three.limb[0] = 3;
+    expected.limb[0] = 15;
+    
+    // Test on GPU
+    fp_mul_gpu(stream, gpu_index, &result, &five, &three);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_mul(result_cpu, five, three);
+    
+    EXPECT_EQ(fp_cmp(result, expected), 0);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp_cmp(result, result_cpu), 0) << "GPU result should match CPU result";
+}
+
+// Test negation (on GPU)
+TEST_F(FpArithmeticTest, Negation) {
+    Fp a, neg_a, result, neg_a_cpu, result_cpu;
+    
+    fp_zero(a);
+    a.limb[0] = 5;
+    
+    // Test on GPU
+    fp_neg_gpu(stream, gpu_index, &neg_a, &a);
+    fp_add_gpu(stream, gpu_index, &result, &a, &neg_a);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_neg(neg_a_cpu, a);
+    fp_add(result_cpu, a, neg_a_cpu);
+    
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test Montgomery conversion round-trip (on GPU)
+TEST_F(FpArithmeticTest, MontgomeryRoundTrip) {
+    Fp value, mont_form, back, mont_form_cpu, back_cpu;
+    
+    fp_zero(value);
+    value.limb[0] = 5;
+    
+    // Test on GPU
+    fp_to_montgomery_gpu(stream, gpu_index, &mont_form, &value);
+    fp_from_montgomery_gpu(stream, gpu_index, &back, &mont_form);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_to_montgomery(mont_form_cpu, value);
+    fp_from_montgomery(back_cpu, mont_form_cpu);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &back, &value), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &back, &back_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test Montgomery multiplication (on GPU)
+TEST_F(FpArithmeticTest, MontgomeryMultiplication) {
+    Fp five, three, five_m, three_m, result_m, result, expected, result_cpu;
+    
+    fp_zero(five);
+    fp_zero(three);
+    fp_zero(expected);
+    five.limb[0] = 5;
+    three.limb[0] = 3;
+    expected.limb[0] = 15;
+    
+    // Convert to Montgomery form (on GPU)
+    fp_to_montgomery_gpu(stream, gpu_index, &five_m, &five);
+    fp_to_montgomery_gpu(stream, gpu_index, &three_m, &three);
+    
+    // Multiply in Montgomery form (on GPU)
+    fp_mont_mul_gpu(stream, gpu_index, &result_m, &five_m, &three_m);
+    
+    // Convert back (on GPU)
+    fp_from_montgomery_gpu(stream, gpu_index, &result, &result_m);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    Fp five_m_cpu, three_m_cpu, result_m_cpu;
+    fp_to_montgomery(five_m_cpu, five);
+    fp_to_montgomery(three_m_cpu, three);
+    fp_mont_mul(result_m_cpu, five_m_cpu, three_m_cpu);
+    fp_from_montgomery(result_cpu, result_m_cpu);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &expected), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test comparison operations (on GPU)
+TEST_F(FpArithmeticTest, Comparison) {
+    Fp five, three;
+    
+    fp_zero(five);
+    fp_zero(three);
+    five.limb[0] = 5;
+    three.limb[0] = 3;
+    
+    // Test on GPU
+    EXPECT_GT(fp_cmp_gpu(stream, gpu_index, &five, &three), 0);  // 5 > 3
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_LT(fp_cmp_gpu(stream, gpu_index, &three, &five), 0);  // 3 < 5
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &five, &five), 0);   // 5 == 5
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test zero and one (on GPU)
+TEST_F(FpArithmeticTest, ZeroAndOne) {
+    Fp zero, one;
+    
+    fp_zero(zero);
+    fp_one(one);
+    
+    // Test on GPU
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &zero));
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_FALSE(fp_is_zero_gpu(stream, gpu_index, &one));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &one));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_FALSE(fp_is_one_gpu(stream, gpu_index, &zero));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test copy (on GPU)
+TEST_F(FpArithmeticTest, Copy) {
+    Fp a, b, b_cpu;
+    
+    fp_zero(a);
+    a.limb[0] = 42;
+    a.limb[1] = 123;
+    
+    // Test on GPU
+    fp_copy_gpu(stream, gpu_index, &b, &a);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_copy(b_cpu, a);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &a, &b), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    // Verify GPU result matches CPU result
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &b, &b_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test conditional move (on GPU)
+TEST_F(FpArithmeticTest, ConditionalMove) {
+    Fp a, b, result, result_cpu;
+    
+    fp_zero(a);
+    fp_zero(b);
+    a.limb[0] = 10;
+    b.limb[0] = 20;
+    
+    // Test move when condition is true (1) on GPU
+    fp_copy_gpu(stream, gpu_index, &result, &a);
+    fp_cmov_gpu(stream, gpu_index, &result, &b, 1);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_copy(result_cpu, a);
+    fp_cmov(result_cpu, b, 1);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &b), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Test no move when condition is false (0) on GPU
+    fp_copy_gpu(stream, gpu_index, &result, &a);
+    fp_cmov_gpu(stream, gpu_index, &result, &b, 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_copy(result_cpu, a);
+    fp_cmov(result_cpu, b, 0);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test multiplication by zero (on GPU)
+TEST_F(FpArithmeticTest, MultiplicationByZero) {
+    Fp a, zero, result, result_cpu;
+    
+    fp_zero(zero);
+    fp_zero(a);
+    a.limb[0] = 5;
+    
+    // Test on GPU
+    fp_mul_gpu(stream, gpu_index, &result, &a, &zero);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_mul(result_cpu, a, zero);
+    
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test inversion (on GPU)
+TEST_F(FpArithmeticTest, Inversion) {
+    Fp a, a_inv, result, a_inv_cpu, result_cpu;
+    
+    fp_zero(a);
+    a.limb[0] = 5;
+    
+    // Test on GPU
+    fp_inv_gpu(stream, gpu_index, &a_inv, &a);
+    fp_mul_gpu(stream, gpu_index, &result, &a, &a_inv);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_inv(a_inv_cpu, a);
+    fp_mul(result_cpu, a, a_inv_cpu);
+    
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &result)) << "a * a^(-1) should equal 1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test inversion of one (on GPU)
+TEST_F(FpArithmeticTest, InversionOfOne) {
+    Fp one, one_inv, one_inv_cpu;
+    
+    fp_one(one);
+    
+    // Test on GPU
+    fp_inv_gpu(stream, gpu_index, &one_inv, &one);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_inv(one_inv_cpu, one);
+    
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &one_inv)) << "1^(-1) should equal 1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &one_inv, &one_inv_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test inversion of zero (should return zero, not crash) (on GPU)
+TEST_F(FpArithmeticTest, InversionOfZero) {
+    Fp zero, zero_inv, zero_inv_cpu;
+    
+    fp_zero(zero);
+    
+    // Test on GPU
+    fp_inv_gpu(stream, gpu_index, &zero_inv, &zero);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_inv(zero_inv_cpu, zero);
+    
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &zero_inv)) << "0^(-1) should return 0 (division by zero)";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &zero_inv, &zero_inv_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test division (on GPU)
+TEST_F(FpArithmeticTest, Division) {
+    Fp a, b, quotient, result, quotient_cpu, result_cpu;
+    
+    fp_zero(a);
+    fp_zero(b);
+    a.limb[0] = 15;
+    b.limb[0] = 3;
+    
+    // Test on GPU
+    fp_div_gpu(stream, gpu_index, &quotient, &a, &b);
+    fp_mul_gpu(stream, gpu_index, &result, &quotient, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_div(quotient_cpu, a, b);
+    fp_mul(result_cpu, quotient_cpu, b);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0) << "quotient * b should equal a";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test division by one (on GPU)
+TEST_F(FpArithmeticTest, DivisionByOne) {
+    Fp a, one, result, result_cpu;
+    
+    fp_one(one);
+    fp_zero(a);
+    a.limb[0] = 42;
+    
+    // Test on GPU
+    fp_div_gpu(stream, gpu_index, &result, &a, &one);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_div(result_cpu, a, one);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0) << "a / 1 should equal a";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test division by zero (should return zero, not crash) (on GPU)
+TEST_F(FpArithmeticTest, DivisionByZero) {
+    Fp a, zero, result, result_cpu;
+    
+    fp_zero(zero);
+    fp_zero(a);
+    a.limb[0] = 5;
+    
+    // Test on GPU
+    fp_div_gpu(stream, gpu_index, &result, &a, &zero);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_div(result_cpu, a, zero);
+    
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result)) << "a / 0 should return 0 (division by zero)";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test exponentiation with small exponent (on GPU)
+TEST_F(FpArithmeticTest, ExponentiationSmall) {
+    Fp base, result, expected, result_cpu;
+    
+    fp_zero(base);
+    base.limb[0] = 5;
+    
+    fp_zero(expected);
+    expected.limb[0] = 125;
+    
+    // Test on GPU
+    fp_pow_u64_gpu(stream, gpu_index, &result, &base, 3);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_pow_u64(result_cpu, base, 3);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &expected), 0) << "5^3 should equal 125";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test exponentiation to power of one (on GPU)
+TEST_F(FpArithmeticTest, ExponentiationToPowerOfOne) {
+    Fp base, result, result_cpu;
+    
+    fp_zero(base);
+    base.limb[0] = 42;
+    
+    // Test on GPU
+    fp_pow_u64_gpu(stream, gpu_index, &result, &base, 1);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_pow_u64(result_cpu, base, 1);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &base), 0) << "a^1 should equal a";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test exponentiation to power of zero (on GPU)
+TEST_F(FpArithmeticTest, ExponentiationToPowerOfZero) {
+    Fp base, result, one, result_cpu;
+    
+    fp_zero(base);
+    base.limb[0] = 42;
+    fp_one(one);
+    
+    // Test on GPU
+    fp_pow_u64_gpu(stream, gpu_index, &result, &base, 0);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_pow_u64(result_cpu, base, 0);
+    
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &result)) << "a^0 should equal 1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test exponentiation with large exponent (Fermat's little theorem)
+TEST_F(FpArithmeticTest, ExponentiationFermat) {
+    Fp a, result;
+    
+    fp_zero(a);
+    a.limb[0] = 5;
+    
+    // a^p mod p = a mod p (Fermat's little theorem)
+    const Fp& p = fp_modulus();
+    fp_pow(result, a, p.limb, FP_LIMBS);
+    
+    EXPECT_EQ(fp_cmp(result, a), 0) << "a^p mod p should equal a (Fermat's little theorem)";
+}
+
+// Test exponentiation: a^(p-1) = 1 mod p
+TEST_F(FpArithmeticTest, ExponentiationFermatInverse) {
+    Fp a, result, one;
+    
+    fp_zero(a);
+    a.limb[0] = 5;
+    fp_one(one);
+    
+    // Skip if a is zero
+    if (fp_is_zero(a)) {
+        return;
+    }
+    
+    // a^(p-1) mod p = 1 (Fermat's little theorem)
+    Fp p_minus_1 = modulus_minus_one;
+    fp_pow(result, a, p_minus_1.limb, FP_LIMBS);
+    
+    EXPECT_TRUE(fp_is_one(result)) << "a^(p-1) mod p should equal 1 (Fermat's little theorem)";
+}
+
+// Test square root (on GPU)
+TEST_F(FpArithmeticTest, SquareRoot) {
+    Fp a, square, sqrt_result, verify, square_cpu, sqrt_result_cpu, verify_cpu;
+    
+    // Test: sqrt(a^2) = a or -a
+    fp_zero(a);
+    a.limb[0] = 5;
+    
+    // Compute a^2 (on GPU)
+    fp_mul_gpu(stream, gpu_index, &square, &a, &a);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_mul(square_cpu, a, a);
+    
+    // Verify that square is a quadratic residue (on GPU)
+    EXPECT_TRUE(fp_is_quadratic_residue_gpu(stream, gpu_index, &square)) << "Square should be a quadratic residue";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Compute sqrt(a^2) (on GPU)
+    bool has_sqrt = fp_sqrt_gpu(stream, gpu_index, &sqrt_result, &square);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_TRUE(has_sqrt) << "Square of non-zero element should have a square root";
+    
+    if (has_sqrt) {
+        // Verify: sqrt_result^2 = square (on GPU)
+        fp_mul_gpu(stream, gpu_index, &verify, &sqrt_result, &sqrt_result);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // Also test on CPU for comparison
+        fp_sqrt(sqrt_result_cpu, square_cpu);
+        fp_mul(verify_cpu, sqrt_result_cpu, sqrt_result_cpu);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &verify, &square), 0) << "sqrt(a^2)^2 should equal a^2";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // Verify sqrt_result is either a or -a (on GPU)
+        Fp neg_a, neg_a_cpu;
+        fp_neg_gpu(stream, gpu_index, &neg_a, &a);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // Also test on CPU for comparison
+        fp_neg(neg_a_cpu, a);
+        
+        bool matches_a = (fp_cmp_gpu(stream, gpu_index, &sqrt_result, &a) == 0);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        bool matches_neg_a = (fp_cmp_gpu(stream, gpu_index, &sqrt_result, &neg_a) == 0);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        EXPECT_TRUE(matches_a || matches_neg_a) << "sqrt(a^2) should equal either a or -a";
+        
+        // Verify GPU result matches CPU result
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &sqrt_result, &sqrt_result_cpu), 0) << "GPU result should match CPU result";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test square root of zero (on GPU)
+TEST_F(FpArithmeticTest, SquareRootOfZero) {
+    Fp zero, result, result_cpu;
+    fp_zero(zero);
+    
+    // Test on GPU
+    bool has_sqrt = fp_sqrt_gpu(stream, gpu_index, &result, &zero);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    bool has_sqrt_cpu = fp_sqrt(result_cpu, zero);
+    
+    EXPECT_TRUE(has_sqrt) << "sqrt(0) should exist";
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result)) << "sqrt(0) should equal 0";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test square root of one (on GPU)
+TEST_F(FpArithmeticTest, SquareRootOfOne) {
+    Fp one, result, result_cpu;
+    fp_one(one);
+    
+    // Test on GPU
+    bool has_sqrt = fp_sqrt_gpu(stream, gpu_index, &result, &one);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    bool has_sqrt_cpu = fp_sqrt(result_cpu, one);
+    
+    EXPECT_TRUE(has_sqrt) << "sqrt(1) should exist";
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &result)) << "sqrt(1) should equal 1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test quadratic residue check (on GPU)
+TEST_F(FpArithmeticTest, IsQuadraticResidue) {
+    Fp a, square, square_cpu, zero;
+    
+    fp_zero(a);
+    a.limb[0] = 5;
+    fp_zero(zero);
+    
+    // a^2 is always a quadratic residue (on GPU)
+    fp_mul_gpu(stream, gpu_index, &square, &a, &a);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_mul(square_cpu, a, a);
+    
+    EXPECT_TRUE(fp_is_quadratic_residue_gpu(stream, gpu_index, &square)) << "Square of any element should be a quadratic residue";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_quadratic_residue_gpu(stream, gpu_index, &zero)) << "Zero should be a quadratic residue";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    Fp one;
+    fp_one(one);
+    EXPECT_TRUE(fp_is_quadratic_residue_gpu(stream, gpu_index, &one)) << "One should be a quadratic residue";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test batch Montgomery conversion (on GPU)
+// Note: batch functions are __host__ __device__, so they can be called from device
+// For now, we test individual conversions on GPU and verify with GPU comparisons
+TEST_F(FpArithmeticTest, BatchMontgomeryConversion) {
+    const int n = 10;
+    Fp normal[n], montgomery[n], back[n];
+    
+    // Initialize with small values
+    for (int i = 0; i < n; i++) {
+        fp_zero(normal[i]);
+        normal[i].limb[0] = i + 1;
+    }
+    
+    // Convert to Montgomery (individual GPU calls for testing)
+    for (int i = 0; i < n; i++) {
+        fp_to_montgomery_gpu(stream, gpu_index, &montgomery[i], &normal[i]);
+    }
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Convert back (individual GPU calls for testing)
+    for (int i = 0; i < n; i++) {
+        fp_from_montgomery_gpu(stream, gpu_index, &back[i], &montgomery[i]);
+    }
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Verify round-trip (on GPU)
+    for (int i = 0; i < n; i++) {
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &back[i], &normal[i]), 0) 
+            << "Batch Montgomery round-trip failed at index " << i;
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// ============================================================================
+// Hardcoded Large Value Tests - Testing with values near modulus
+// ============================================================================
+
+// Test 1: Addition that doesn't overflow (on GPU)
 TEST_F(FpArithmeticTest, LargeAddition1) {
     // a = large value
-    Fp a = make_fp(0x18e00013555855ULL, 0x2b772294629DAULL, 0x412736E1F11D66ULL,
+    Fp a = test_utils::make_fp(0x18e00013555855ULL, 0x2b772294629DAULL, 0x412736E1F11D66ULL,
                    0x87BAD325DD638ULL, 0x4CAD5BC5017FULL, 0x1007E1A4B2D56ULL, 0x1E6F707D94629ULL);
     
     // b = small value
-    Fp b = make_fp(0x1234567890ABCULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
+    Fp b = test_utils::make_fp(0x1234567890ABCULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
     
-    // Expected: a + b (no reduction needed)
-    Fp expected;
-    fp_add(expected, a, b);  // Let implementation compute and verify it's consistent
+    // Test on GPU
+    Fp result, result2, expected_cpu;
+    fp_add_gpu(stream, gpu_index, &result, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    Fp result;
-    fp_add(result, a, b);
+    // Also test on CPU for comparison
+    fp_add(expected_cpu, a, b);
     
-    EXPECT_EQ(fp_cmp(result, expected), 0) << "Large addition without overflow failed";
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &expected_cpu), 0) << "Large addition without overflow failed";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    // Verify commutativity: a + b = b + a
-    Fp result2;
-    fp_add(result2, b, a);
-    EXPECT_EQ(fp_cmp(result, result2), 0) << "Addition commutativity failed";
+    // Verify commutativity: a + b = b + a (on GPU)
+    fp_add_gpu(stream, gpu_index, &result2, &b, &a);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result2), 0) << "Addition commutativity failed";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 2: Addition that triggers reduction (sum > p)
+// Test 2: Addition that triggers reduction (sum > p) (on GPU)
 TEST_F(FpArithmeticTest, LargeAddition2WithReduction) {
     // Use two large numbers that will trigger reduction
     // a + b should wrap around modulus
-    Fp a = make_fp(0x311c0026aab0aaaaULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
+    Fp a = test_utils::make_fp(0x311c0026aab0aaaaULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
                    0x0f75a64bbac71602ULL, 0x0095a4b78a02fe32ULL, 0x200fc34965aad640ULL, 0x3cdee0fb28c5e535ULL);
     
     // b = 1 (so a+b should wrap to 0 if a = p-1)
@@ -243,17 +1044,28 @@ TEST_F(FpArithmeticTest, LargeAddition2WithReduction) {
     fp_zero(b);
     b.limb[0] = 1;
     
-    Fp result;
-    fp_add(result, a, b);
+    // Test on GPU
+    Fp result, result_cpu;
+    fp_add_gpu(stream, gpu_index, &result, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Also test on CPU for comparison
+    fp_add(result_cpu, a, b);
     
     // (p-1) + 1 = 0 (mod p)
-    EXPECT_TRUE(fp_is_zero(result)) << "Addition with reduction (p-1)+1 should equal 0";
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result)) << "Addition with reduction (p-1)+1 should equal 0";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 3: Subtraction without borrow
+// Test 3: Subtraction without borrow (on GPU)
 TEST_F(FpArithmeticTest, LargeSubtraction1) {
     // a = large value
-    Fp a = make_fp(0x18e00013555855ULL, 0x2b772294629DAULL, 0x412736E1F11D66ULL,
+    Fp a = test_utils::make_fp(0x18e00013555855ULL, 0x2b772294629DAULL, 0x412736E1F11D66ULL,
                    0x87BAD325DD638ULL, 0x4CAD5BC5017FULL, 0x1007E1A4B2D56ULL, 0x1E6F707D94629ULL);
     
     // b = 1000
@@ -261,35 +1073,59 @@ TEST_F(FpArithmeticTest, LargeSubtraction1) {
     fp_zero(b);
     b.limb[0] = 1000;
     
-    Fp result;
-    fp_sub(result, a, b);
+    // Test on GPU
+    Fp result, verify, result_cpu, verify_cpu;
+    fp_sub_gpu(stream, gpu_index, &result, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    // Verify: (a - b) + b = a
-    Fp verify;
-    fp_add(verify, result, b);
+    // Verify: (a - b) + b = a (on GPU)
+    fp_add_gpu(stream, gpu_index, &verify, &result, &b);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    EXPECT_EQ(fp_cmp(verify, a), 0) << "Large subtraction failed: (a-b)+b != a";
+    // Also test on CPU for comparison
+    fp_sub(result_cpu, a, b);
+    fp_add(verify_cpu, result_cpu, b);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &verify, &a), 0) << "Large subtraction failed: (a-b)+b != a";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 4: Subtraction with borrow (a < b)
+// Test 4: Subtraction with borrow (a < b) (on GPU)
 TEST_F(FpArithmeticTest, LargeSubtraction2WithBorrow) {
     // a = 50
-    Fp a = make_fp(0x32ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
+    Fp a = test_utils::make_fp(0x32ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
     
     // b = 100
-    Fp b = make_fp(0x64ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
+    Fp b = test_utils::make_fp(0x64ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
     
     // Expected: 50 - 100 = -50 = p - 50 (mod p)
-    Fp expected = make_fp(0x311c0026aab0aa79ULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
+    Fp expected = test_utils::make_fp(0x311c0026aab0aa79ULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
                           0xf75a64bbac71602ULL, 0x95a4b78a02fe32ULL, 0x200fc34965aad640ULL, 0x3cdee0fb28c5e535ULL);
     
-    Fp result;
-    fp_sub(result, a, b);
+    // Test on GPU
+    Fp result, result_cpu;
+    fp_sub_gpu(stream, gpu_index, &result, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    EXPECT_EQ(fp_cmp(result, expected), 0) << "Subtraction with borrow failed";
+    // Also test on CPU for comparison
+    fp_sub(result_cpu, a, b);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &expected), 0) << "Subtraction with borrow failed";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 5: Multiplication of large values (triggers reduction)
+// Test 5: Multiplication of large values (triggers reduction) (on GPU)
 TEST_F(FpArithmeticTest, LargeMultiplication1) {
     // a = 2^200 (bit 200 set)
     Fp a;
@@ -301,45 +1137,70 @@ TEST_F(FpArithmeticTest, LargeMultiplication1) {
     fp_zero(b);
     b.limb[1] = 0x10ULL;  // bit 100 = bit 36 of limb 1
     
-    Fp result;
-    fp_mul(result, a, b);
+    // Test on GPU
+    Fp result, verify, result2, one, result_cpu;
+    fp_mul_gpu(stream, gpu_index, &result, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    // Verify: a * b * 1 = a * b (consistency check)
-    Fp one;
+    // Verify: a * b * 1 = a * b (consistency check) (on GPU)
     fp_one(one);
-    Fp verify;
-    fp_mul(verify, result, one);
+    fp_mul_gpu(stream, gpu_index, &verify, &result, &one);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    EXPECT_EQ(fp_cmp(result, verify), 0) << "Large multiplication consistency failed";
+    // Also test on CPU for comparison
+    fp_mul(result_cpu, a, b);
     
-    // Verify commutativity: a * b = b * a
-    Fp result2;
-    fp_mul(result2, b, a);
-    EXPECT_EQ(fp_cmp(result, result2), 0) << "Multiplication commutativity failed";
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &verify), 0) << "Large multiplication consistency failed";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Verify commutativity: a * b = b * a (on GPU)
+    fp_mul_gpu(stream, gpu_index, &result2, &b, &a);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result2), 0) << "Multiplication commutativity failed";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 6: (p-1) * (p-1) = 1 (mod p)
+// Test 6: (p-1) * (p-1) = 1 (mod p) (on GPU)
 TEST_F(FpArithmeticTest, LargeMultiplication2ModulusMinus1) {
     // a = p - 1
-    Fp a = make_fp(0x311c0026aab0aaaaULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
+    Fp a = test_utils::make_fp(0x311c0026aab0aaaaULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
                    0xf75a64bbac71602ULL, 0x95a4b78a02fe32ULL, 0x200fc34965aad640ULL, 0x3cdee0fb28c5e535ULL);
     
     // b = p - 1
     Fp b = a;
     
     // Expected: (p-1) * (p-1) = p^2 - 2p + 1 = 1 (mod p)
-    Fp expected = make_fp(0x1ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
+    Fp expected = test_utils::make_fp(0x1ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
     
-    Fp result;
-    fp_mul(result, a, b);
+    // Test on GPU
+    Fp result, result_cpu;
+    fp_mul_gpu(stream, gpu_index, &result, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    EXPECT_EQ(fp_cmp(result, expected), 0) << "(p-1) * (p-1) should equal 1";
+    // Also test on CPU for comparison
+    fp_mul(result_cpu, a, b);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &expected), 0) << "(p-1) * (p-1) should equal 1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 7: Multiplication with 2: a * 2 = a + a
+// Test 7: Multiplication with 2: a * 2 = a + a (on GPU)
 TEST_F(FpArithmeticTest, LargeMultiplication3Half) {
     // a = large value
-    Fp a = make_fp(0x18e00013555855ULL, 0x2b772294629DAE6ULL, 0x412736E1F11D66F7ULL,
+    Fp a = test_utils::make_fp(0x18e00013555855ULL, 0x2b772294629DAE6ULL, 0x412736E1F11D66F7ULL,
                    0x7BAD325DD638B01ULL, 0x4CAD5BC5017F19ULL, 0x1007E1A4B2D56B20ULL, 0x1E6F707D9462F2ULL);
     
     // b = 2
@@ -347,83 +1208,1398 @@ TEST_F(FpArithmeticTest, LargeMultiplication3Half) {
     fp_zero(b);
     b.limb[0] = 2;
     
-    // Compute a * 2
-    Fp result;
-    fp_mul(result, a, b);
+    // Test on GPU
+    Fp result, expected, result_cpu, expected_cpu;
+    fp_mul_gpu(stream, gpu_index, &result, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    // Verify: a * 2 = a + a
-    Fp expected;
-    fp_add(expected, a, a);
+    // Verify: a * 2 = a + a (on GPU)
+    fp_add_gpu(stream, gpu_index, &expected, &a, &a);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    EXPECT_EQ(fp_cmp(result, expected), 0) << "a * 2 should equal a + a";
+    // Also test on CPU for comparison
+    fp_mul(result_cpu, a, b);
+    fp_add(expected_cpu, a, a);
+    
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &expected), 0) << "a * 2 should equal a + a";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 8: Large number squared
+// Test 8: Large number squared (on GPU)
 TEST_F(FpArithmeticTest, LargeMultiplication4Square) {
     // a = large value
-    Fp a = make_fp(0x123456789ABCDEFULL, 0xFEDCBA9876543210ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
+    Fp a = test_utils::make_fp(0x123456789ABCDEFULL, 0xFEDCBA9876543210ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL);
     
-    Fp result;
-    fp_mul(result, a, a);
+    // Test on GPU
+    Fp result, verify, one, result_cpu;
+    fp_mul_gpu(stream, gpu_index, &result, &a, &a);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    // Verify: a^2 * 1 = a^2
-    Fp one;
+    // Verify: a^2 * 1 = a^2 (on GPU)
     fp_one(one);
-    Fp verify;
-    fp_mul(verify, result, one);
+    fp_mul_gpu(stream, gpu_index, &verify, &result, &one);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    EXPECT_EQ(fp_cmp(result, verify), 0) << "Square consistency check failed";
+    // Also test on CPU for comparison
+    fp_mul(result_cpu, a, a);
     
-    // Verify: a^2 should not equal zero (unless a is zero)
-    EXPECT_FALSE(fp_is_zero(result)) << "Square of non-zero element is zero";
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &verify), 0) << "Square consistency check failed";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Verify: a^2 should not equal zero (unless a is zero) (on GPU)
+    EXPECT_FALSE(fp_is_zero_gpu(stream, gpu_index, &result)) << "Square of non-zero element is zero";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 9: Addition chain near modulus
+// Test 9: Addition chain near modulus (on GPU)
 TEST_F(FpArithmeticTest, LargeAddition3Chain) {
     // Start with p-1
-    Fp a = make_fp(0x311c0026aab0aaaaULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
+    Fp a = test_utils::make_fp(0x311c0026aab0aaaaULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
                    0x0f75a64bbac71602ULL, 0x0095a4b78a02fe32ULL, 0x200fc34965aad640ULL, 0x3cdee0fb28c5e535ULL);
     
     // Add 1 repeatedly
     Fp one;
     fp_one(one);
     
+    // Test on GPU
     Fp result = a;
     
-    // (p-1) + 1 = 0, then 0 + 1 = 1
-    fp_add(result, result, one);  // result should be 0
-    EXPECT_TRUE(fp_is_zero(result)) << "Addition chain: (p-1)+1 should be 0";
+    // (p-1) + 1 = 0, then 0 + 1 = 1 (on GPU)
+    fp_add_gpu(stream, gpu_index, &result, &result, &one);  // result should be 0
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result)) << "Addition chain: (p-1)+1 should be 0";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    fp_add(result, result, one);  // result should be 1
-    EXPECT_EQ(fp_cmp(result, one), 0) << "Addition chain: 0+1 should be 1";
+    fp_add_gpu(stream, gpu_index, &result, &result, &one);  // result should be 1
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &one), 0) << "Addition chain: 0+1 should be 1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
 }
 
-// Test 10: Complex multiplication with reduction
+// Test 10: Complex multiplication with reduction (on GPU)
 TEST_F(FpArithmeticTest, LargeMultiplication5Complex) {
     // a = large prime-like number
-    Fp a = make_fp(0x123456789ABCDEFULL, 0xFEDCBA9876543210ULL, 0x0123456789ABCDEFULL,
+    Fp a = test_utils::make_fp(0x123456789ABCDEFULL, 0xFEDCBA9876543210ULL, 0x0123456789ABCDEFULL,
                    0xFEDCBA9876543210ULL, 0x123456789ABULL, 0x1000000000000ULL, 0x10000000000ULL);
     
     // b = another large number
-    Fp b = make_fp(0xABCDEF0123456789ULL, 0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL,
+    Fp b = test_utils::make_fp(0xABCDEF0123456789ULL, 0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL,
                    0x123456789ABCDEFULL, 0xFEDCBA98765ULL, 0x2000000000000ULL, 0x20000000000ULL);
     
-    // Compute a * b
-    Fp result;
-    fp_mul(result, a, b);
+    // Test on GPU
+    Fp result, verify, one, result2, result_cpu;
+    fp_mul_gpu(stream, gpu_index, &result, &a, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    // Verify: (a * b) * 1 = a * b
-    Fp one;
+    // Verify: (a * b) * 1 = a * b (on GPU)
     fp_one(one);
-    Fp verify;
-    fp_mul(verify, result, one);
+    fp_mul_gpu(stream, gpu_index, &verify, &result, &one);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    EXPECT_EQ(fp_cmp(result, verify), 0) << "Complex large multiplication consistency check failed";
+    // Also test on CPU for comparison
+    fp_mul(result_cpu, a, b);
     
-    // Verify: a * b = b * a (commutativity)
-    Fp result2;
-    fp_mul(result2, b, a);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &verify), 0) << "Complex large multiplication consistency check failed";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
     
-    EXPECT_EQ(fp_cmp(result, result2), 0) << "Multiplication commutativity failed for large values";
+    // Verify: a * b = b * a (commutativity) (on GPU)
+    fp_mul_gpu(stream, gpu_index, &result2, &b, &a);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result2), 0) << "Multiplication commutativity failed for large values";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &result_cpu), 0) << "GPU result should match CPU result";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// ============================================================================
+// Property-Based Tests
+// ============================================================================
+
+// Test addition associativity: (a + b) + c = a + (b + c) (on GPU)
+TEST_F(FpPropertyTest, AdditionAssociativity) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp b = random_value();
+        Fp c = random_value();
+        
+        Fp result1, result2;
+        Fp temp;
+        
+        // (a + b) + c (on GPU)
+        fp_add_gpu(stream, gpu_index, &temp, &a, &b);
+        fp_add_gpu(stream, gpu_index, &result1, &temp, &c);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // a + (b + c) (on GPU)
+        fp_add_gpu(stream, gpu_index, &temp, &b, &c);
+        fp_add_gpu(stream, gpu_index, &result2, &a, &temp);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Addition associativity failed: (a+b)+c != a+(b+c)";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test multiplication associativity: (a * b) * c = a * (b * c) (on GPU)
+TEST_F(FpPropertyTest, MultiplicationAssociativity) {
+    for (int i = 0; i < 50; i++) {  // Fewer iterations due to multiplication cost
+        Fp a = random_value();
+        Fp b = random_value();
+        Fp c = random_value();
+        
+        Fp result1, result2;
+        Fp temp;
+        
+        // (a * b) * c (on GPU)
+        fp_mul_gpu(stream, gpu_index, &temp, &a, &b);
+        fp_mul_gpu(stream, gpu_index, &result1, &temp, &c);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // a * (b * c) (on GPU)
+        fp_mul_gpu(stream, gpu_index, &temp, &b, &c);
+        fp_mul_gpu(stream, gpu_index, &result2, &a, &temp);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Multiplication associativity failed: (a*b)*c != a*(b*c)";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test distributivity: a * (b + c) = a*b + a*c (on GPU)
+TEST_F(FpPropertyTest, MultiplicationDistributivity) {
+    for (int i = 0; i < 50; i++) {
+        Fp a = random_value();
+        Fp b = random_value();
+        Fp c = random_value();
+        
+        Fp result1, result2;
+        Fp temp1, temp2;
+        
+        // a * (b + c) (on GPU)
+        fp_add_gpu(stream, gpu_index, &temp1, &b, &c);
+        fp_mul_gpu(stream, gpu_index, &result1, &a, &temp1);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // a*b + a*c (on GPU)
+        fp_mul_gpu(stream, gpu_index, &temp1, &a, &b);
+        fp_mul_gpu(stream, gpu_index, &temp2, &a, &c);
+        fp_add_gpu(stream, gpu_index, &result2, &temp1, &temp2);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Distributivity failed: a*(b+c) != a*b + a*c";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test addition commutativity with random values (on GPU)
+TEST_F(FpPropertyTest, AdditionCommutativityRandom) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp b = random_value();
+        
+        Fp result1, result2;
+        fp_add_gpu(stream, gpu_index, &result1, &a, &b);
+        fp_add_gpu(stream, gpu_index, &result2, &b, &a);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Addition commutativity failed: a+b != b+a";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test multiplication commutativity with random values (on GPU)
+TEST_F(FpPropertyTest, MultiplicationCommutativityRandom) {
+    for (int i = 0; i < 50; i++) {
+        Fp a = random_value();
+        Fp b = random_value();
+        
+        Fp result1, result2;
+        fp_mul_gpu(stream, gpu_index, &result1, &a, &b);
+        fp_mul_gpu(stream, gpu_index, &result2, &b, &a);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Multiplication commutativity failed: a*b != b*a";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test additive identity: a + 0 = a (on GPU)
+TEST_F(FpPropertyTest, AdditiveIdentity) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp result;
+        
+        fp_add_gpu(stream, gpu_index, &result, &a, &zero);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0) << "Additive identity failed: a + 0 != a";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test multiplicative identity: a * 1 = a (on GPU)
+TEST_F(FpPropertyTest, MultiplicativeIdentity) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp result;
+        
+        fp_mul_gpu(stream, gpu_index, &result, &a, &one);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0) << "Multiplicative identity failed: a * 1 != a";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test additive inverse: a + (-a) = 0 (on GPU)
+TEST_F(FpPropertyTest, AdditiveInverse) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp neg_a, result;
+        
+        fp_neg_gpu(stream, gpu_index, &neg_a, &a);
+        fp_add_gpu(stream, gpu_index, &result, &a, &neg_a);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result)) << "Additive inverse failed: a + (-a) != 0";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test double negation: -(-a) = a (on GPU)
+TEST_F(FpPropertyTest, DoubleNegation) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp neg_a, neg_neg_a;
+        
+        fp_neg_gpu(stream, gpu_index, &neg_a, &a);
+        fp_neg_gpu(stream, gpu_index, &neg_neg_a, &neg_a);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &neg_neg_a, &a), 0) << "Double negation failed: -(-a) != a";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test subtraction as addition of negation: a - b = a + (-b) (on GPU)
+TEST_F(FpPropertyTest, SubtractionAsNegation) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp b = random_value();
+        
+        Fp result1, result2;
+        Fp neg_b;
+        
+        fp_sub_gpu(stream, gpu_index, &result1, &a, &b);
+        fp_neg_gpu(stream, gpu_index, &neg_b, &b);
+        fp_add_gpu(stream, gpu_index, &result2, &a, &neg_b);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Subtraction as negation failed: a - b != a + (-b)";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test Montgomery form round-trip with random values (on GPU)
+TEST_F(FpPropertyTest, MontgomeryRoundTripRandom) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp mont_form, back;
+        
+        fp_to_montgomery_gpu(stream, gpu_index, &mont_form, &a);
+        fp_from_montgomery_gpu(stream, gpu_index, &back, &mont_form);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &back, &a), 0) 
+            << "Montgomery round-trip failed for random value";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test multiplicative inverse: a * a^(-1) = 1 (on GPU)
+TEST_F(FpPropertyTest, MultiplicativeInverse) {
+    for (int i = 0; i < 50; i++) {
+        Fp a = random_value();
+        // Skip zero (on GPU)
+        if (fp_is_zero_gpu(stream, gpu_index, &a)) {
+            cudaStreamSynchronize(stream);
+            continue;
+        }
+        cudaStreamSynchronize(stream);
+        
+        Fp a_inv, result;
+        fp_inv_gpu(stream, gpu_index, &a_inv, &a);
+        fp_mul_gpu(stream, gpu_index, &result, &a, &a_inv);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &result)) 
+            << "Multiplicative inverse failed: a * a^(-1) != 1";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test division: (a / b) * b = a (on GPU)
+TEST_F(FpPropertyTest, DivisionProperty) {
+    for (int i = 0; i < 50; i++) {
+        Fp a = random_value();
+        Fp b = random_value();
+        // Skip zero divisor (on GPU)
+        if (fp_is_zero_gpu(stream, gpu_index, &b)) {
+            cudaStreamSynchronize(stream);
+            continue;
+        }
+        cudaStreamSynchronize(stream);
+        
+        Fp quotient, result;
+        fp_div_gpu(stream, gpu_index, &quotient, &a, &b);
+        fp_mul_gpu(stream, gpu_index, &result, &quotient, &b);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0) 
+            << "Division property failed: (a / b) * b != a";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test division as multiplication by inverse: a / b = a * b^(-1) (on GPU)
+TEST_F(FpPropertyTest, DivisionAsInverse) {
+    for (int i = 0; i < 50; i++) {
+        Fp a = random_value();
+        Fp b = random_value();
+        // Skip zero divisor (on GPU)
+        if (fp_is_zero_gpu(stream, gpu_index, &b)) {
+            cudaStreamSynchronize(stream);
+            continue;
+        }
+        cudaStreamSynchronize(stream);
+        
+        Fp result1, result2;
+        Fp b_inv;
+        
+        fp_div_gpu(stream, gpu_index, &result1, &a, &b);
+        fp_inv_gpu(stream, gpu_index, &b_inv, &b);
+        fp_mul_gpu(stream, gpu_index, &result2, &a, &b_inv);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Division as inverse failed: a / b != a * b^(-1)";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test exponentiation: (a^e1)^e2 = a^(e1*e2) for small exponents (on GPU)
+TEST_F(FpPropertyTest, ExponentiationPowerOfPower) {
+    for (int i = 0; i < 20; i++) {  // Fewer iterations due to cost
+        Fp a = random_value();
+        // Skip zero (on GPU)
+        if (fp_is_zero_gpu(stream, gpu_index, &a)) {
+            cudaStreamSynchronize(stream);
+            continue;
+        }
+        cudaStreamSynchronize(stream);
+        
+        uint64_t e1 = (rng() % 100) + 1;  // 1 to 100
+        uint64_t e2 = (rng() % 10) + 1;   // 1 to 10
+        
+        Fp result1, result2, temp;
+        
+        // (a^e1)^e2 (on GPU)
+        fp_pow_u64_gpu(stream, gpu_index, &temp, &a, e1);
+        fp_pow_u64_gpu(stream, gpu_index, &result1, &temp, e2);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // a^(e1*e2) (on GPU)
+        uint64_t e_product = e1 * e2;
+        fp_pow_u64_gpu(stream, gpu_index, &result2, &a, e_product);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Exponentiation power of power failed: (a^e1)^e2 != a^(e1*e2)";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test exponentiation: a^e1 * a^e2 = a^(e1+e2) (on GPU)
+TEST_F(FpPropertyTest, ExponentiationProduct) {
+    for (int i = 0; i < 20; i++) {  // Fewer iterations due to cost
+        Fp a = random_value();
+        // Skip zero (on GPU)
+        if (fp_is_zero_gpu(stream, gpu_index, &a)) {
+            cudaStreamSynchronize(stream);
+            continue;
+        }
+        cudaStreamSynchronize(stream);
+        
+        uint64_t e1 = (rng() % 50) + 1;  // 1 to 50
+        uint64_t e2 = (rng() % 50) + 1;  // 1 to 50
+        
+        Fp result1, result2, temp1, temp2;
+        
+        // a^e1 * a^e2 (on GPU)
+        fp_pow_u64_gpu(stream, gpu_index, &temp1, &a, e1);
+        fp_pow_u64_gpu(stream, gpu_index, &temp2, &a, e2);
+        fp_mul_gpu(stream, gpu_index, &result1, &temp1, &temp2);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // a^(e1+e2) (on GPU)
+        uint64_t e_sum = e1 + e2;
+        fp_pow_u64_gpu(stream, gpu_index, &result2, &a, e_sum);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result1, &result2), 0) 
+            << "Exponentiation product failed: a^e1 * a^e2 != a^(e1+e2)";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test inversion of inversion: (a^(-1))^(-1) = a (on GPU)
+TEST_F(FpPropertyTest, DoubleInversion) {
+    for (int i = 0; i < 50; i++) {
+        Fp a = random_value();
+        // Skip zero (on GPU)
+        if (fp_is_zero_gpu(stream, gpu_index, &a)) {
+            cudaStreamSynchronize(stream);
+            continue;
+        }
+        cudaStreamSynchronize(stream);
+        
+        Fp a_inv, a_inv_inv;
+        fp_inv_gpu(stream, gpu_index, &a_inv, &a);
+        fp_inv_gpu(stream, gpu_index, &a_inv_inv, &a_inv);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &a_inv_inv, &a), 0) 
+            << "Double inversion failed: (a^(-1))^(-1) != a";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// Test square root property: sqrt(a^2) = a (for random a) (on GPU)
+TEST_F(FpPropertyTest, SquareRootProperty) {
+    for (int i = 0; i < 50; i++) {
+        Fp a = random_value();
+        Fp square, sqrt_result, verify;
+        
+        // Compute a^2 (on GPU)
+        fp_mul_gpu(stream, gpu_index, &square, &a, &a);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // Compute sqrt(a^2) (on GPU)
+        bool has_sqrt = fp_sqrt_gpu(stream, gpu_index, &sqrt_result, &square);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        EXPECT_TRUE(has_sqrt) << "Square of any element should have a square root";
+        
+        if (!has_sqrt) continue;  // Skip if square root doesn't exist (shouldn't happen for squares)
+        
+        // Verify: sqrt_result^2 = square (on GPU)
+        fp_mul_gpu(stream, gpu_index, &verify, &sqrt_result, &sqrt_result);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &verify, &square), 0) 
+            << "Square root property failed: sqrt(a^2)^2 != a^2";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // Also verify that sqrt_result is either a or -a (on GPU)
+        Fp neg_a;
+        fp_neg_gpu(stream, gpu_index, &neg_a, &a);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        bool matches_a = (fp_cmp_gpu(stream, gpu_index, &sqrt_result, &a) == 0);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        bool matches_neg_a = (fp_cmp_gpu(stream, gpu_index, &sqrt_result, &neg_a) == 0);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        EXPECT_TRUE(matches_a || matches_neg_a) 
+            << "sqrt(a^2) should equal either a or -a";
+    }
+}
+
+// Test quadratic residue property: squares are always quadratic residues (on GPU)
+TEST_F(FpPropertyTest, QuadraticResidueProperty) {
+    for (int i = 0; i < 100; i++) {
+        Fp a = random_value();
+        Fp square;
+        
+        // Compute a^2 (on GPU)
+        fp_mul_gpu(stream, gpu_index, &square, &a, &a);
+        cudaError_t err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        // a^2 should always be a quadratic residue (on GPU)
+        EXPECT_TRUE(fp_is_quadratic_residue_gpu(stream, gpu_index, &square)) 
+            << "Square of any element should be a quadratic residue";
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+}
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+// Test operations with p-1 (on GPU)
+TEST_F(FpEdgeCaseTest, OperationsWithModulusMinusOne) {
+    // (p-1) + 1 = 0 (on GPU)
+    Fp result;
+    fp_add_gpu(stream, gpu_index, &result, &modulus_minus_one, &one);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result)) << "(p-1) + 1 should equal 0";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // (p-1) * (p-1) = 1 (on GPU)
+    fp_mul_gpu(stream, gpu_index, &result, &modulus_minus_one, &modulus_minus_one);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &result)) << "(p-1) * (p-1) should equal 1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // -(p-1) = 1 (on GPU)
+    fp_neg_gpu(stream, gpu_index, &result, &modulus_minus_one);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &result)) << "-(p-1) should equal 1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test operations with p-2 (on GPU)
+TEST_F(FpEdgeCaseTest, OperationsWithModulusMinusTwo) {
+    // (p-2) + 1 = p-1 (on GPU)
+    Fp result;
+    fp_add_gpu(stream, gpu_index, &result, &modulus_minus_two, &one);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &modulus_minus_one), 0) << "(p-2) + 1 should equal p-1";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // (p-2) + 2 = 0 (on GPU)
+    fp_add_gpu(stream, gpu_index, &result, &modulus_minus_two, &two);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result)) << "(p-2) + 2 should equal 0";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test operations with very small values (on GPU)
+TEST_F(FpEdgeCaseTest, VerySmallValues) {
+    Fp zero_val, one_val, two_val, three_val;
+    fp_zero(zero_val);
+    fp_one(one_val);
+    fp_zero(two_val);
+    two_val.limb[0] = 2;
+    fp_zero(three_val);
+    three_val.limb[0] = 3;
+    
+    // 0 + 0 = 0 (on GPU)
+    Fp result;
+    fp_add_gpu(stream, gpu_index, &result, &zero_val, &zero_val);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // 1 + 1 = 2 (on GPU)
+    fp_add_gpu(stream, gpu_index, &result, &one_val, &one_val);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &two_val), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // 2 * 2 = 4 (on GPU)
+    Fp four;
+    fp_zero(four);
+    four.limb[0] = 4;
+    fp_mul_gpu(stream, gpu_index, &result, &two_val, &two_val);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &four), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // 3 - 2 = 1 (on GPU)
+    fp_sub_gpu(stream, gpu_index, &result, &three_val, &two_val);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &result));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test operations with max limb values (on GPU)
+TEST_F(FpEdgeCaseTest, MaxLimbValues) {
+    // Test that max_limb_value is valid
+    EXPECT_TRUE(test_utils::is_valid_fp(max_limb_value)) 
+        << "max_limb_value should be < p";
+    
+    // max_limb_value + 0 = max_limb_value (on GPU)
+    Fp result;
+    fp_add_gpu(stream, gpu_index, &result, &max_limb_value, &zero);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &max_limb_value), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // max_limb_value * 1 = max_limb_value (on GPU)
+    fp_mul_gpu(stream, gpu_index, &result, &max_limb_value, &one);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &max_limb_value), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test operations with alternating bit patterns (on GPU)
+TEST_F(FpEdgeCaseTest, AlternatingBitPatterns) {
+    // Test that alternating_bits is valid
+    EXPECT_TRUE(test_utils::is_valid_fp(alternating_bits)) 
+        << "alternating_bits should be < p";
+    
+    // alternating_bits + 0 = alternating_bits (on GPU)
+    Fp result;
+    fp_add_gpu(stream, gpu_index, &result, &alternating_bits, &zero);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &alternating_bits), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // alternating_bits * 1 = alternating_bits (on GPU)
+    fp_mul_gpu(stream, gpu_index, &result, &alternating_bits, &one);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &alternating_bits), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test edge case: zero operations (on GPU)
+TEST_F(FpEdgeCaseTest, ZeroOperations) {
+    // 0 + 0 = 0 (on GPU)
+    Fp result;
+    fp_add_gpu(stream, gpu_index, &result, &zero, &zero);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // 0 - 0 = 0 (on GPU)
+    fp_sub_gpu(stream, gpu_index, &result, &zero, &zero);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // 0 * anything = 0 (on GPU)
+    Fp random = test_utils::random_fp(rng);
+    fp_mul_gpu(stream, gpu_index, &result, &zero, &random);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // -0 = 0 (on GPU)
+    fp_neg_gpu(stream, gpu_index, &result, &zero);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_zero_gpu(stream, gpu_index, &result));
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test edge case: one operations (on GPU)
+TEST_F(FpEdgeCaseTest, OneOperations) {
+    // 1 + 1 = 2 (on GPU)
+    Fp result;
+    fp_add_gpu(stream, gpu_index, &result, &one, &one);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &two), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // 1 * anything = anything (on GPU)
+    Fp random = test_utils::random_fp(rng);
+    fp_mul_gpu(stream, gpu_index, &result, &one, &random);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &random), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // -1 = p-1 (on GPU)
+    fp_neg_gpu(stream, gpu_index, &result, &one);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &modulus_minus_one), 0);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test fp_one_montgomery (on GPU)
+TEST_F(FpEdgeCaseTest, OneMontgomery) {
+    Fp one_mont, one_normal;
+    fp_one(one_normal);
+    fp_one_montgomery(one_mont);
+    
+    // Convert one_mont back to normal form should give 1 (on GPU)
+    Fp converted_back;
+    fp_from_montgomery_gpu(stream, gpu_index, &converted_back, &one_mont);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_TRUE(fp_is_one_gpu(stream, gpu_index, &converted_back)) << "fp_one_montgomery should represent 1 in Montgomery form";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test repeated operations (stress test) (on GPU)
+TEST_F(FpEdgeCaseTest, RepeatedOperations) {
+    Fp a = test_utils::random_fp(rng);
+    Fp result = a;
+    
+    // Add 0 many times (on GPU)
+    for (int i = 0; i < 1000; i++) {
+        fp_add_gpu(stream, gpu_index, &result, &result, &zero);
+    }
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0) << "Adding 0 many times should not change value";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Multiply by 1 many times (on GPU)
+    result = a;
+    for (int i = 0; i < 1000; i++) {
+        fp_mul_gpu(stream, gpu_index, &result, &result, &one);
+    }
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0) << "Multiplying by 1 many times should not change value";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    // Add and subtract same value (on GPU)
+    result = a;
+    Fp b = test_utils::random_fp(rng);
+    for (int i = 0; i < 100; i++) {
+        fp_add_gpu(stream, gpu_index, &result, &result, &b);
+        fp_sub_gpu(stream, gpu_index, &result, &result, &b);
+    }
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &result, &a), 0) << "Repeated add/subtract should return to original";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// ============================================================================
+// CUDA Kernel Tests
+// ============================================================================
+
+// Test CUDA kernel: array addition
+TEST_F(FpCudaKernelTest, CudaKernelArrayAdd) {
+    const int n = 1000;
+    Fp* h_a = new Fp[n];
+    Fp* h_b = new Fp[n];
+    Fp* h_c = new Fp[n];
+    Fp* h_expected = new Fp[n];
+    
+    // Initialize with random values
+    for (int i = 0; i < n; i++) {
+        h_a[i] = test_utils::random_fp(rng);
+        h_b[i] = test_utils::random_fp(rng);
+        // Compute expected result on host
+        fp_add(h_expected[i], h_a[i], h_b[i]);
+    }
+    
+    // Launch GPU kernel
+    fp_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    // Check CUDA errors
+    cudaError_t err = cudaStreamSynchronize(stream);
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    // Verify results match host computation
+    for (int i = 0; i < n; i++) {
+        EXPECT_EQ(fp_cmp(h_c[i], h_expected[i]), 0) 
+            << "GPU result mismatch at index " << i;
+    }
+    
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c;
+    delete[] h_expected;
+}
+
+// Test CUDA kernel: array multiplication
+TEST_F(FpCudaKernelTest, CudaKernelArrayMul) {
+    const int n = 1000;
+    Fp* h_a = new Fp[n];
+    Fp* h_b = new Fp[n];
+    Fp* h_c = new Fp[n];
+    Fp* h_expected = new Fp[n];
+    
+    // Initialize with random values
+    for (int i = 0; i < n; i++) {
+        h_a[i] = test_utils::random_fp(rng);
+        h_b[i] = test_utils::random_fp(rng);
+        // Compute expected result on host
+        fp_mul(h_expected[i], h_a[i], h_b[i]);
+    }
+    
+    // Launch GPU kernel
+    fp_mul_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    // Check CUDA errors
+    cudaError_t err = cudaStreamSynchronize(stream);
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    // Verify results match host computation
+    for (int i = 0; i < n; i++) {
+        EXPECT_EQ(fp_cmp(h_c[i], h_expected[i]), 0) 
+            << "GPU result mismatch at index " << i;
+    }
+    
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c;
+    delete[] h_expected;
+}
+
+// Test CUDA kernel: array addition with edge cases
+TEST_F(FpCudaKernelTest, CudaKernelArrayAddEdgeCases) {
+    const int n = 100;
+    Fp* h_a = new Fp[n];
+    Fp* h_b = new Fp[n];
+    Fp* h_c = new Fp[n];
+    Fp* h_expected = new Fp[n];
+    
+    // Test with various edge cases
+    for (int i = 0; i < n; i++) {
+        if (i < 10) {
+            // First 10: zero + zero
+            fp_zero(h_a[i]);
+            fp_zero(h_b[i]);
+        } else if (i < 20) {
+            // Next 10: one + one
+            fp_one(h_a[i]);
+            fp_one(h_b[i]);
+        } else if (i < 30) {
+            // Next 10: (p-1) + 1 = 0
+            h_a[i] = modulus_minus_one;
+            fp_one(h_b[i]);
+        } else {
+            // Rest: random values
+            h_a[i] = test_utils::random_fp(rng);
+            h_b[i] = test_utils::random_fp(rng);
+        }
+        // Compute expected result on host
+        fp_add(h_expected[i], h_a[i], h_b[i]);
+    }
+    
+    // Launch GPU kernel
+    fp_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    // Check CUDA errors
+    cudaError_t err = cudaStreamSynchronize(stream);
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    // Verify results
+    for (int i = 0; i < n; i++) {
+        EXPECT_EQ(fp_cmp(h_c[i], h_expected[i]), 0) 
+            << "GPU result mismatch at index " << i;
+    }
+    
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c;
+    delete[] h_expected;
+}
+
+// Test CUDA kernel: array multiplication with edge cases
+TEST_F(FpCudaKernelTest, CudaKernelArrayMulEdgeCases) {
+    const int n = 100;
+    Fp* h_a = new Fp[n];
+    Fp* h_b = new Fp[n];
+    Fp* h_c = new Fp[n];
+    Fp* h_expected = new Fp[n];
+    
+    // Test with various edge cases
+    for (int i = 0; i < n; i++) {
+        if (i < 10) {
+            // First 10: zero * anything = zero
+            fp_zero(h_a[i]);
+            h_b[i] = test_utils::random_fp(rng);
+        } else if (i < 20) {
+            // Next 10: one * anything = anything
+            fp_one(h_a[i]);
+            h_b[i] = test_utils::random_fp(rng);
+        } else if (i < 30) {
+            // Next 10: (p-1) * (p-1) = 1
+            h_a[i] = modulus_minus_one;
+            h_b[i] = modulus_minus_one;
+        } else {
+            // Rest: random values
+            h_a[i] = test_utils::random_fp(rng);
+            h_b[i] = test_utils::random_fp(rng);
+        }
+        // Compute expected result on host
+        fp_mul(h_expected[i], h_a[i], h_b[i]);
+    }
+    
+    // Launch GPU kernel
+    fp_mul_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    // Check CUDA errors
+    cudaError_t err = cudaStreamSynchronize(stream);
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    // Verify results
+    for (int i = 0; i < n; i++) {
+        EXPECT_EQ(fp_cmp(h_c[i], h_expected[i]), 0) 
+            << "GPU result mismatch at index " << i;
+    }
+    
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c;
+    delete[] h_expected;
+}
+
+// Test CUDA kernel: large array
+TEST_F(FpCudaKernelTest, CudaKernelLargeArray) {
+    const int n = 10000;
+    Fp* h_a = new Fp[n];
+    Fp* h_b = new Fp[n];
+    Fp* h_c = new Fp[n];
+    
+    // Initialize with random values
+    for (int i = 0; i < n; i++) {
+        h_a[i] = test_utils::random_fp(rng);
+        h_b[i] = test_utils::random_fp(rng);
+    }
+    
+    // Launch GPU kernel
+    fp_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    // Check CUDA errors
+    cudaError_t err = cudaStreamSynchronize(stream);
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    // Verify a sample of results (checking all would be slow)
+    for (int i = 0; i < 100; i++) {
+        Fp expected;
+        fp_add(expected, h_a[i], h_b[i]);
+        EXPECT_EQ(fp_cmp(h_c[i], expected), 0) 
+            << "GPU result mismatch at index " << i;
+    }
+    
+    // Check some random indices
+    std::uniform_int_distribution<int> dist(0, n - 1);
+    for (int i = 0; i < 10; i++) {
+        int idx = dist(rng);
+        Fp expected;
+        fp_add(expected, h_a[idx], h_b[idx]);
+        EXPECT_EQ(fp_cmp(h_c[idx], expected), 0) 
+            << "GPU result mismatch at random index " << idx;
+    }
+    
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c;
+}
+
+// Test CUDA kernel: boundary conditions for launch configuration
+// Tests that the "if (idx < n)" check works correctly at block boundaries
+TEST_F(FpCudaKernelTest, CudaKernelBoundaryConditions) {
+    // Test sizes that stress the launch configuration
+    // threadsPerBlock = 256, so test around block boundaries
+    std::vector<int> test_sizes = {1, 255, 256, 257, 511, 512, 513, 1023, 1024, 1025};
+    
+    for (int n : test_sizes) {
+        Fp* h_a = new Fp[n];
+        Fp* h_b = new Fp[n];
+        Fp* h_c = new Fp[n];
+        Fp* h_expected = new Fp[n];
+        
+        // Initialize
+        for (int i = 0; i < n; i++) {
+            h_a[i] = test_utils::random_fp(rng);
+            h_b[i] = test_utils::random_fp(rng);
+            fp_add(h_expected[i], h_a[i], h_b[i]);
+        }
+        
+        // Launch GPU kernel
+        fp_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+        
+        // Check CUDA errors
+        cudaError_t err = cudaStreamSynchronize(stream);
+        checkCudaError(err, "CUDA kernel execution failed");
+        
+        // Verify ALL results (important for boundary testing)
+        for (int i = 0; i < n; i++) {
+            EXPECT_EQ(fp_cmp(h_c[i], h_expected[i]), 0) 
+                << "GPU result mismatch at index " << i << " for size " << n;
+        }
+        
+        delete[] h_a;
+        delete[] h_b;
+        delete[] h_c;
+        delete[] h_expected;
+    }
+}
+
+// Test CUDA kernel: verify kernel actually launches (not just CPU fallback)
+TEST_F(FpCudaKernelTest, CudaKernelActuallyLaunches) {
+    const int n = 1000;
+    Fp* h_a = new Fp[n];
+    Fp* h_b = new Fp[n];
+    Fp* h_c = new Fp[n];
+    
+    // Initialize
+    for (int i = 0; i < n; i++) {
+        h_a[i] = test_utils::random_fp(rng);
+        h_b[i] = test_utils::random_fp(rng);
+    }
+    
+    // Check that we can query device properties (verifies CUDA is available)
+    int deviceCount;
+    cudaError_t err = cudaGetDeviceCount(&deviceCount);
+    checkCudaError(err, "Failed to get device count");
+    EXPECT_GT(deviceCount, 0) << "No CUDA devices available";
+    
+    // Launch kernel and check for launch errors immediately
+    fp_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    // Check for kernel launch errors (not just sync errors)
+    err = cudaPeekAtLastError();
+    checkCudaError(err, "CUDA kernel launch failed");
+    
+    // Synchronize to ensure kernel completes
+    err = cudaDeviceSynchronize();
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c;
+}
+
+// Test CUDA kernel: verify device constant memory is accessible
+TEST_F(FpCudaKernelTest, CudaKernelDeviceConstants) {
+    // This test verifies that DEVICE_MODULUS is properly initialized
+    // by running a kernel that uses it (multiplication uses Montgomery which needs modulus)
+    const int n = 100;
+    Fp* h_a = new Fp[n];
+    Fp* h_b = new Fp[n];
+    Fp* h_c = new Fp[n];
+    Fp* h_expected = new Fp[n];
+    
+    // Initialize with values that will trigger modular reduction
+    for (int i = 0; i < n; i++) {
+        h_a[i] = test_utils::random_fp(rng);
+        h_b[i] = test_utils::random_fp(rng);
+        fp_mul(h_expected[i], h_a[i], h_b[i]);
+    }
+    
+    // Launch multiplication kernel (uses DEVICE_MODULUS via Montgomery reduction)
+    fp_mul_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    // Check CUDA errors
+    cudaError_t err = cudaStreamSynchronize(stream);
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    // Verify results (if constants are wrong, results will be wrong)
+    for (int i = 0; i < n; i++) {
+        EXPECT_EQ(fp_cmp(h_c[i], h_expected[i]), 0) 
+            << "GPU result mismatch - possible device constant memory issue at index " << i;
+    }
+    
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c;
+    delete[] h_expected;
+}
+
+// Test CUDA kernel: empty array (edge case)
+TEST_F(FpCudaKernelTest, CudaKernelEmptyArray) {
+    const int n = 0;
+    Fp* h_a = nullptr;
+    Fp* h_b = nullptr;
+    Fp* h_c = nullptr;
+    
+    // Should handle empty array gracefully
+    fp_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    // Check CUDA errors
+    cudaError_t err = cudaStreamSynchronize(stream);
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    // No assertions needed - just verify it doesn't crash
+}
+
+// Test CUDA kernel: single element
+TEST_F(FpCudaKernelTest, CudaKernelSingleElement) {
+    const int n = 1;
+    Fp* h_a = new Fp[n];
+    Fp* h_b = new Fp[n];
+    Fp* h_c = new Fp[n];
+    
+    fp_one(h_a[0]);
+    fp_one(h_b[0]);
+    
+    fp_add_array_host(stream, gpu_index, h_c, h_a, h_b, n);
+    
+    cudaError_t err = cudaStreamSynchronize(stream);
+    checkCudaError(err, "CUDA kernel execution failed");
+    
+    Fp expected;
+    fp_add(expected, h_a[0], h_b[0]);
+    EXPECT_EQ(fp_cmp(h_c[0], expected), 0) << "Single element test failed";
+    
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c;
+}
+
+
+// ============================================================================
+// Curve Point Tests
+// ============================================================================
+
+// Test is_on_curve_g1 with point at infinity
+TEST_F(FpArithmeticTest, CurveG1PointAtInfinity) {
+    G1Point point;
+    g1_point_at_infinity(point);
+    
+    EXPECT_TRUE(g1_is_infinity(point)) << "Point should be at infinity";
+    EXPECT_TRUE(is_on_curve_g1(point)) << "Point at infinity should be on curve";
+}
+
+// Test is_on_curve_g1 with valid point (on GPU)
+// We'll create a point by starting with a valid y and computing x
+// Or use a known valid point
+TEST_F(FpArithmeticTest, CurveG1ValidPoint) {
+    G1Point point;
+    point.infinity = false;
+    
+    // Strategy: Start with a small y value, compute y^2, then find x such that x^3 = y^2 - b
+    // Or simpler: test with x=0, which gives y^2 = b, so y = sqrt(b)
+    fp_zero(point.x);
+    
+    const Fp& b = curve_b_g1();
+    
+    // Compute y = sqrt(b) (on GPU)
+    bool has_sqrt = fp_sqrt_gpu(stream, gpu_index, &point.y, &b);
+    cudaError_t err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    if (!has_sqrt) {
+        // If b is not a quadratic residue, try x=2 (on GPU)
+        fp_zero(point.x);
+        point.x.limb[0] = 2;
+        
+        Fp x_squared, x_cubed, x_cubed_plus_b;
+        fp_mul_gpu(stream, gpu_index, &x_squared, &point.x, &point.x);
+        fp_mul_gpu(stream, gpu_index, &x_cubed, &x_squared, &point.x);
+        fp_add_gpu(stream, gpu_index, &x_cubed_plus_b, &x_cubed, &b);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        has_sqrt = fp_sqrt_gpu(stream, gpu_index, &point.y, &x_cubed_plus_b);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    }
+    
+    if (!has_sqrt) {
+        // Try a few more x values (on GPU)
+        for (uint64_t x_val = 0; x_val <= 10; x_val++) {
+            fp_zero(point.x);
+            point.x.limb[0] = x_val;
+            
+            Fp x_squared, x_cubed, x_cubed_plus_b;
+            fp_mul_gpu(stream, gpu_index, &x_squared, &point.x, &point.x);
+            fp_mul_gpu(stream, gpu_index, &x_cubed, &x_squared, &point.x);
+            fp_add_gpu(stream, gpu_index, &x_cubed_plus_b, &x_cubed, &b);
+            err = cudaStreamSynchronize(stream);
+            ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+            
+            if (fp_is_quadratic_residue_gpu(stream, gpu_index, &x_cubed_plus_b)) {
+                err = cudaStreamSynchronize(stream);
+                ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+                has_sqrt = fp_sqrt_gpu(stream, gpu_index, &point.y, &x_cubed_plus_b);
+                err = cudaStreamSynchronize(stream);
+                ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+                if (has_sqrt) break;
+            }
+        }
+    }
+    
+    ASSERT_TRUE(has_sqrt) << "Should be able to find at least one valid point";
+    
+    // Verify point is on curve
+    EXPECT_TRUE(is_on_curve_g1(point)) << "Computed point should be on curve";
+    
+    // Verify: y^2 = x^3 + b (on GPU)
+    Fp y_squared;
+    fp_mul_gpu(stream, gpu_index, &y_squared, &point.y, &point.y);
+    Fp x_squared, x_cubed, x_cubed_plus_b;
+    fp_mul_gpu(stream, gpu_index, &x_squared, &point.x, &point.x);
+    fp_mul_gpu(stream, gpu_index, &x_cubed, &x_squared, &point.x);
+    fp_add_gpu(stream, gpu_index, &x_cubed_plus_b, &x_cubed, &b);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    EXPECT_EQ(fp_cmp_gpu(stream, gpu_index, &y_squared, &x_cubed_plus_b), 0) << "y^2 should equal x^3 + b";
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+}
+
+// Test is_on_curve_g1 with invalid point
+TEST_F(FpArithmeticTest, CurveG1InvalidPoint) {
+    G1Point point;
+    point.infinity = false;
+    
+    // Set x = 1, y = 1 (which doesn't satisfy y^2 = x^3 + b = 5)
+    fp_one(point.x);
+    fp_one(point.y);
+    
+    EXPECT_FALSE(is_on_curve_g1(point)) << "Invalid point should not be on curve";
+}
+
+// Test that negating y preserves curve validity (on GPU)
+TEST_F(FpArithmeticTest, CurveG1FieldOperationsConsistency) {
+    G1Point point;
+    point.infinity = false;
+    
+    // Find a valid point by trying different x values (on GPU)
+    const Fp& b = curve_b_g1();
+    bool found_valid = false;
+    cudaError_t err;
+    
+    for (uint64_t x_val = 0; x_val <= 10; x_val++) {
+        fp_zero(point.x);
+        point.x.limb[0] = x_val;
+        
+        Fp x_squared, x_cubed, x_cubed_plus_b;
+        fp_mul_gpu(stream, gpu_index, &x_squared, &point.x, &point.x);
+        fp_mul_gpu(stream, gpu_index, &x_cubed, &x_squared, &point.x);
+        fp_add_gpu(stream, gpu_index, &x_cubed_plus_b, &x_cubed, &b);
+        err = cudaStreamSynchronize(stream);
+        ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+        
+        if (fp_is_quadratic_residue_gpu(stream, gpu_index, &x_cubed_plus_b)) {
+            err = cudaStreamSynchronize(stream);
+            ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+            bool has_sqrt = fp_sqrt_gpu(stream, gpu_index, &point.y, &x_cubed_plus_b);
+            err = cudaStreamSynchronize(stream);
+            ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+            if (has_sqrt) {
+                found_valid = true;
+                break;
+            }
+        }
+    }
+    
+    ASSERT_TRUE(found_valid) << "Should be able to find at least one valid point";
+    ASSERT_TRUE(is_on_curve_g1(point)) << "Initial point should be valid";
+    
+    // Negate y: (-y)^2 = y^2, so point should still be valid (on GPU)
+    Fp neg_y;
+    fp_neg_gpu(stream, gpu_index, &neg_y, &point.y);
+    fp_copy_gpu(stream, gpu_index, &point.y, &neg_y);
+    err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(err, cudaSuccess) << "CUDA error: " << cudaGetErrorString(err);
+    
+    EXPECT_TRUE(is_on_curve_g1(point)) << "Point with negated y should still be on curve";
+}
+
+// Test is_on_curve_g2 with point at infinity
+TEST_F(FpArithmeticTest, CurveG2PointAtInfinity) {
+    G2Point point;
+    g2_point_at_infinity(point);
+    
+    EXPECT_TRUE(g2_is_infinity(point)) << "Point should be at infinity";
+    EXPECT_TRUE(is_on_curve_g2(point)) << "Point at infinity should be on curve";
 }
 
