@@ -54,6 +54,7 @@ __host__ __device__ void fp2_sub(Fp2& c, const Fp2& a, const Fp2& b) {
 // Uses Karatsuba-like optimization: (a0 + a1*i)*(b0 + b1*i) = a0*b0 - a1*b1 + (a0*b1 + a1*b0)*i
 // We can optimize by computing: t0 = a0*b0, t1 = a1*b1, t2 = (a0 + a1)*(b0 + b1)
 // Then: c0 = t0 - t1, c1 = t2 - t0 - t1
+// NOTE: This assumes inputs are in normal form and converts to/from Montgomery
 __host__ __device__ void fp2_mul(Fp2& c, const Fp2& a, const Fp2& b) {
     Fp t0, t1, t2, t3;
     
@@ -71,6 +72,36 @@ __host__ __device__ void fp2_mul(Fp2& c, const Fp2& a, const Fp2& b) {
     
     // t2 = (a0 + a1) * (b0 + b1)
     fp_mul(t2, t2, t3);
+    
+    // c0 = a0*b0 - a1*b1 = t0 - t1
+    fp_sub(c.c0, t0, t1);
+    
+    // c1 = a0*b1 + a1*b0 = (a0 + a1)*(b0 + b1) - a0*b0 - a1*b1 = t2 - t0 - t1
+    fp_sub(c.c1, t2, t0);
+    fp_sub(c.c1, c.c1, t1);
+}
+
+// Montgomery multiplication: c = a * b (all in Montgomery form)
+// (a0 + a1*i) * (b0 + b1*i) = (a0*b0 - a1*b1) + (a0*b1 + a1*b0)*i
+// Uses Karatsuba-like optimization
+// NOTE: All inputs and outputs are in Montgomery form
+__host__ __device__ void fp2_mont_mul(Fp2& c, const Fp2& a, const Fp2& b) {
+    Fp t0, t1, t2, t3;
+    
+    // t0 = a0 * b0 (Montgomery multiply)
+    fp_mont_mul(t0, a.c0, b.c0);
+    
+    // t1 = a1 * b1 (Montgomery multiply)
+    fp_mont_mul(t1, a.c1, b.c1);
+    
+    // t2 = a0 + a1
+    fp_add(t2, a.c0, a.c1);
+    
+    // t3 = b0 + b1
+    fp_add(t3, b.c0, b.c1);
+    
+    // t2 = (a0 + a1) * (b0 + b1) (Montgomery multiply)
+    fp_mont_mul(t2, t2, t3);
     
     // c0 = a0*b0 - a1*b1 = t0 - t1
     fp_sub(c.c0, t0, t1);
@@ -189,10 +220,42 @@ __host__ __device__ void fp2_inv(Fp2& c, const Fp2& a) {
     fp_inv_fermat(norm_inv, norm);
     
     // Now compute c = conjugate(a) * norm_inv
-    Fp2 conj;
-    fp2_conjugate(conj, a);
-    fp_mul(c.c0, conj.c0, norm_inv);
-    fp_mul(c.c1, conj.c1, norm_inv);
+    fp_mul(c.c0, a.c0, norm_inv);
+    
+    // c1 = -a1 * norm_inv
+    fp_neg(c.c1, a.c1);
+    fp_mul(c.c1, c.c1, norm_inv);
+}
+
+// Montgomery inversion: c = a^(-1) (all in Montgomery form)
+// NOTE: All inputs and outputs are in Montgomery form
+__host__ __device__ void fp2_mont_inv(Fp2& c, const Fp2& a) {
+    // Check for zero
+    if (fp2_is_zero(a)) {
+        fp2_zero(c);
+        return;
+    }
+    
+    Fp t0, t1, norm, norm_inv;
+    
+    // t0 = a0^2 (Montgomery multiply)
+    fp_mont_mul(t0, a.c0, a.c0);
+    
+    // t1 = a1^2 (Montgomery multiply)
+    fp_mont_mul(t1, a.c1, a.c1);
+    
+    // norm = a0^2 + a1^2
+    fp_add(norm, t0, t1);
+    
+    // norm_inv = 1 / norm (use Montgomery inversion)
+    fp_mont_inv(norm_inv, norm);
+    
+    // c0 = a0 * norm_inv (Montgomery multiply)
+    fp_mont_mul(c.c0, a.c0, norm_inv);
+    
+    // c1 = -a1 * norm_inv (Montgomery multiply)
+    fp_neg(c.c1, a.c1);
+    fp_mont_mul(c.c1, c.c1, norm_inv);
 }
 
 // Division: c = a / b = a * b^(-1)

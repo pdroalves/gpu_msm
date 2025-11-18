@@ -24,8 +24,8 @@ struct PointTraits<G1Point> {
     __host__ __device__ static void field_neg(FieldType& c, const FieldType& a) { fp_neg(c, a); }
     __host__ __device__ static void field_add(FieldType& c, const FieldType& a, const FieldType& b) { fp_add(c, a, b); }
     __host__ __device__ static void field_sub(FieldType& c, const FieldType& a, const FieldType& b) { fp_sub(c, a, b); }
-    __host__ __device__ static void field_mul(FieldType& c, const FieldType& a, const FieldType& b) { fp_mul(c, a, b); }
-    __host__ __device__ static void field_inv(FieldType& c, const FieldType& a) { fp_inv(c, a); }
+    __host__ __device__ static void field_mul(FieldType& c, const FieldType& a, const FieldType& b) { fp_mont_mul(c, a, b); }
+    __host__ __device__ static void field_inv(FieldType& c, const FieldType& a) { fp_mont_inv(c, a); }
     __host__ __device__ static int field_cmp(const FieldType& a, const FieldType& b) { return fp_cmp(a, b); }
     __host__ __device__ static bool field_is_zero(const FieldType& a) { return fp_is_zero(a); }
     
@@ -44,8 +44,8 @@ struct PointTraits<G2Point> {
     __host__ __device__ static void field_neg(FieldType& c, const FieldType& a) { fp2_neg(c, a); }
     __host__ __device__ static void field_add(FieldType& c, const FieldType& a, const FieldType& b) { fp2_add(c, a, b); }
     __host__ __device__ static void field_sub(FieldType& c, const FieldType& a, const FieldType& b) { fp2_sub(c, a, b); }
-    __host__ __device__ static void field_mul(FieldType& c, const FieldType& a, const FieldType& b) { fp2_mul(c, a, b); }
-    __host__ __device__ static void field_inv(FieldType& c, const FieldType& a) { fp2_inv(c, a); }
+    __host__ __device__ static void field_mul(FieldType& c, const FieldType& a, const FieldType& b) { fp2_mont_mul(c, a, b); }
+    __host__ __device__ static void field_inv(FieldType& c, const FieldType& a) { fp2_mont_inv(c, a); }
     __host__ __device__ static int field_cmp(const FieldType& a, const FieldType& b) { return fp2_cmp(a, b); }
     __host__ __device__ static bool field_is_zero(const FieldType& a) { return fp2_is_zero(a); }
     
@@ -533,11 +533,327 @@ __host__ __device__ const G2Point& g2_generator() {
 }
 
 // ============================================================================
-// Multi-Scalar Multiplication (MSM)
+// Multi-Scalar Multiplication (MSM) - Pippenger Algorithm
 // ============================================================================
 
-// Template CUDA kernels for MSM operations
+// Pippenger algorithm parameters
+// MSM_WINDOW_SIZE and MSM_BUCKET_COUNT are defined in curve.h
 
+// Helper function to extract a window from a scalar
+__device__ __forceinline__ int extract_window_u64(uint64_t scalar, int window_idx, int window_size) {
+    int bit_offset = window_idx * window_size;
+    if (bit_offset >= 64) return 0;
+    int bits_remaining = 64 - bit_offset;
+    int actual_size = (bits_remaining < window_size) ? bits_remaining : window_size;
+    return (scalar >> bit_offset) & ((1ULL << actual_size) - 1);
+}
+
+// Helper function to extract a window from a multi-limb scalar
+__device__ __forceinline__ int extract_window_multi(const uint64_t* scalar, int scalar_limbs, int window_idx, int window_size) {
+    int total_bits = scalar_limbs * 64;
+    int bit_offset = window_idx * window_size;
+    if (bit_offset >= total_bits) return 0;
+    
+    int limb_idx = bit_offset / 64;
+    int bit_in_limb = bit_offset % 64;
+    
+    if (limb_idx >= scalar_limbs) return 0;
+    
+    uint64_t mask = (1ULL << window_size) - 1;
+    uint64_t window = (scalar[limb_idx] >> bit_in_limb) & mask;
+    
+    // If window spans two limbs, combine them
+    if (bit_in_limb + window_size > 64 && limb_idx + 1 < scalar_limbs) {
+        int bits_from_next = (bit_in_limb + window_size) - 64;
+        uint64_t next_bits = scalar[limb_idx + 1] & ((1ULL << bits_from_next) - 1);
+        window |= (next_bits << (window_size - bits_from_next));
+    }
+    
+    return (int)window;
+}
+
+// Pippenger kernel: Clear buckets
+template<typename PointType>
+__global__ void kernel_clear_buckets(
+    PointType* buckets,
+    int num_buckets
+) {
+    using Traits = PointTraits<PointType>;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < num_buckets) {
+        Traits::point_at_infinity(buckets[idx]);
+    }
+}
+
+// Pippenger kernel: Final reduction of bucket contributions from multiple blocks
+// This kernel combines per-block bucket accumulations into final buckets
+template<typename PointType>
+__global__ void kernel_reduce_buckets(
+    PointType* final_buckets,
+    const PointType* block_buckets,
+    int num_blocks,
+    int num_buckets
+) {
+    using Traits = PointTraits<PointType>;
+    
+    // Each thread handles one bucket across all blocks
+    int bucket_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (bucket_idx == 0 || bucket_idx >= num_buckets) return;
+    
+    PointType bucket_sum;
+    Traits::point_at_infinity(bucket_sum);
+    
+    // Sum contributions from all blocks for this bucket
+    for (int block = 0; block < num_blocks; block++) {
+        int idx = block * num_buckets + bucket_idx;
+        const PointType& block_contrib = block_buckets[idx];
+        if (!Traits::is_infinity(block_contrib)) {
+            if (Traits::is_infinity(bucket_sum)) {
+                Traits::field_copy(bucket_sum.x, block_contrib.x);
+                Traits::field_copy(bucket_sum.y, block_contrib.y);
+                bucket_sum.infinity = block_contrib.infinity;
+            } else {
+                PointType temp;
+                point_add(temp, bucket_sum, block_contrib);
+                Traits::field_copy(bucket_sum.x, temp.x);
+                Traits::field_copy(bucket_sum.y, temp.y);
+                bucket_sum.infinity = temp.infinity;
+            }
+        }
+    }
+    
+    // Write final result
+    Traits::field_copy(final_buckets[bucket_idx].x, bucket_sum.x);
+    Traits::field_copy(final_buckets[bucket_idx].y, bucket_sum.y);
+    final_buckets[bucket_idx].infinity = bucket_sum.infinity;
+}
+
+// Pippenger kernel: Accumulate points into buckets for a specific window (64-bit scalars)
+// Sppark-style single-pass approach: process all points in parallel, one thread per point
+// Each block accumulates per-bucket contributions in shared memory, writes to block_buckets
+template<typename PointType>
+__global__ void kernel_accumulate_buckets_u64(
+    PointType* block_buckets,  // Output: num_blocks * MSM_BUCKET_COUNT (per-block bucket accumulations)
+    const PointType* points,
+    const uint64_t* scalars,
+    int n,
+    int window_idx,
+    int window_size
+) {
+    using Traits = PointTraits<PointType>;
+    
+    // Shared memory layout:
+    // - shared_buckets[MSM_BUCKET_COUNT]: per-bucket accumulations
+    // - thread_points[blockDim.x]: points processed by each thread
+    // - thread_buckets[blockDim.x]: bucket index for each thread's point
+    extern __shared__ char shared_mem[];
+    PointType* shared_buckets = (PointType*)shared_mem;
+    PointType* thread_points = (PointType*)(shared_mem + MSM_BUCKET_COUNT * sizeof(PointType));
+    int* thread_buckets = (int*)(shared_mem + MSM_BUCKET_COUNT * sizeof(PointType) + blockDim.x * sizeof(PointType));
+    
+    // Initialize shared memory buckets to infinity
+    for (int i = threadIdx.x; i < MSM_BUCKET_COUNT; i += blockDim.x) {
+        Traits::point_at_infinity(shared_buckets[i]);
+    }
+    __syncthreads();
+    
+    // Phase 1: Each thread processes one point and stores it in shared memory
+    int point_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (point_idx < n) {
+        int bucket_idx = extract_window_u64(scalars[point_idx], window_idx, window_size);
+        thread_points[threadIdx.x] = points[point_idx];
+        thread_buckets[threadIdx.x] = bucket_idx;
+    } else {
+        Traits::point_at_infinity(thread_points[threadIdx.x]);
+        thread_buckets[threadIdx.x] = 0;
+    }
+    __syncthreads();
+    
+    // Phase 2: Parallel reduction per bucket
+    // Each thread handles one bucket and sums all contributions to that bucket
+    if (threadIdx.x < MSM_BUCKET_COUNT) {
+        int bucket_idx = threadIdx.x;
+        PointType bucket_sum;
+        Traits::point_at_infinity(bucket_sum);
+        
+        // Sum contributions from threads that belong to this bucket
+        for (int t = 0; t < blockDim.x; t++) {
+            int global_t_idx = blockIdx.x * blockDim.x + t;
+            if (global_t_idx < n && thread_buckets[t] == bucket_idx && !Traits::is_infinity(thread_points[t])) {
+                if (Traits::is_infinity(bucket_sum)) {
+                    Traits::field_copy(bucket_sum.x, thread_points[t].x);
+                    Traits::field_copy(bucket_sum.y, thread_points[t].y);
+                    bucket_sum.infinity = thread_points[t].infinity;
+                } else {
+                    PointType temp;
+                    point_add(temp, bucket_sum, thread_points[t]);
+                    Traits::field_copy(bucket_sum.x, temp.x);
+                    Traits::field_copy(bucket_sum.y, temp.y);
+                    bucket_sum.infinity = temp.infinity;
+                }
+            }
+        }
+        
+        Traits::field_copy(shared_buckets[bucket_idx].x, bucket_sum.x);
+        Traits::field_copy(shared_buckets[bucket_idx].y, bucket_sum.y);
+        shared_buckets[bucket_idx].infinity = bucket_sum.infinity;
+    }
+    __syncthreads();
+    
+    // Phase 3: Write block's bucket contributions to global memory
+    if (threadIdx.x < MSM_BUCKET_COUNT) {
+        int bucket_idx = threadIdx.x;
+        int block_bucket_idx = blockIdx.x * MSM_BUCKET_COUNT + bucket_idx;
+        const PointType& bucket = shared_buckets[bucket_idx];
+        Traits::field_copy(block_buckets[block_bucket_idx].x, bucket.x);
+        Traits::field_copy(block_buckets[block_bucket_idx].y, bucket.y);
+        block_buckets[block_bucket_idx].infinity = bucket.infinity;
+    }
+}
+
+// Pippenger kernel: Accumulate points into buckets for multi-limb scalars
+template<typename PointType>
+__global__ void kernel_accumulate_buckets_multi(
+    PointType* buckets,
+    const PointType* points,
+    const uint64_t* scalars,
+    int scalar_limbs,
+    int n,
+    int window_idx,
+    int window_size
+) {
+    using Traits = PointTraits<PointType>;
+    
+    // Same approach as u64 version: process each bucket sequentially
+    int bucket_idx = blockIdx.x;
+    if (bucket_idx == 0 || bucket_idx >= MSM_BUCKET_COUNT) return;
+    
+    PointType bucket_sum;
+    Traits::point_at_infinity(bucket_sum);
+    
+    int points_per_thread = (n + blockDim.x - 1) / blockDim.x;
+    int start_idx = threadIdx.x * points_per_thread;
+    int end_idx = min(start_idx + points_per_thread, n);
+    
+    for (int i = start_idx; i < end_idx; i++) {
+        int point_bucket = extract_window_multi(scalars + i * scalar_limbs, scalar_limbs, window_idx, window_size);
+        if (point_bucket == bucket_idx) {
+            if (Traits::is_infinity(bucket_sum)) {
+                Traits::field_copy(bucket_sum.x, points[i].x);
+                Traits::field_copy(bucket_sum.y, points[i].y);
+                bucket_sum.infinity = points[i].infinity;
+            } else {
+                PointType temp;
+                point_add(temp, bucket_sum, points[i]);
+                Traits::field_copy(bucket_sum.x, temp.x);
+                Traits::field_copy(bucket_sum.y, temp.y);
+                bucket_sum.infinity = temp.infinity;
+            }
+        }
+    }
+    
+    // Reduce within block using dynamic shared memory
+    extern __shared__ char shared_mem[];
+    PointType* shared_sums = (PointType*)shared_mem;
+    shared_sums[threadIdx.x] = bucket_sum;
+    __syncthreads();
+    
+    // Thread 0 reduces all thread results
+    if (threadIdx.x == 0) {
+        PointType total_sum;
+        Traits::point_at_infinity(total_sum);
+        for (int i = 0; i < blockDim.x; i++) {
+            if (!Traits::is_infinity(shared_sums[i])) {
+                if (Traits::is_infinity(total_sum)) {
+                    Traits::field_copy(total_sum.x, shared_sums[i].x);
+                    Traits::field_copy(total_sum.y, shared_sums[i].y);
+                    total_sum.infinity = shared_sums[i].infinity;
+                } else {
+                    PointType temp;
+                    point_add(temp, total_sum, shared_sums[i]);
+                    Traits::field_copy(total_sum.x, temp.x);
+                    Traits::field_copy(total_sum.y, temp.y);
+                    total_sum.infinity = temp.infinity;
+                }
+            }
+        }
+        Traits::field_copy(buckets[bucket_idx].x, total_sum.x);
+        Traits::field_copy(buckets[bucket_idx].y, total_sum.y);
+        buckets[bucket_idx].infinity = total_sum.infinity;
+    }
+}
+
+// Pippenger kernel: Combine buckets for a window and accumulate into result
+// Standard Pippenger: window_sum = bucket[1] * 1 + bucket[2] * 2 + ... + bucket[15] * 15
+// Using Horner's method: window_sum = bucket[1] + 2 * (bucket[2] + 2 * (bucket[3] + ... + 2 * bucket[15]))
+// Then result = result * 2^window_size + window_sum
+template<typename PointType>
+__global__ void kernel_combine_buckets(
+    PointType* result,
+    PointType* buckets,
+    int num_buckets,
+    int window_idx
+) {
+    using Traits = PointTraits<PointType>;
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        // Compute window_sum = bucket[1] * 1 + bucket[2] * 2 + ... + bucket[15] * 15
+        // Direct method: for each bucket i, add it i times
+        // This is O(n^2) but acceptable for small n (16 buckets = 120 additions per window)
+        // For larger window sizes, this could be optimized further, but for 4-bit windows it's fine
+        PointType window_sum;
+        Traits::point_at_infinity(window_sum);
+        
+        for (int i = 1; i < num_buckets; i++) {
+            if (!Traits::is_infinity(buckets[i])) {
+                // Add bucket[i] i times to window_sum
+                for (int j = 0; j < i; j++) {
+                    if (Traits::is_infinity(window_sum)) {
+                        Traits::field_copy(window_sum.x, buckets[i].x);
+                        Traits::field_copy(window_sum.y, buckets[i].y);
+                        window_sum.infinity = buckets[i].infinity;
+                    } else {
+                        PointType temp;
+                        point_add(temp, window_sum, buckets[i]);
+                        Traits::field_copy(window_sum.x, temp.x);
+                        Traits::field_copy(window_sum.y, temp.y);
+                        window_sum.infinity = temp.infinity;
+                    }
+                }
+            }
+        }
+        
+        // Add window sum to result
+        // For windows processed from MSB to LSB:
+        // - First window (MSB, highest window_idx): result = window_sum (no multiplication)
+        // - Subsequent windows: result = result * 2^window_size + window_sum
+        if (!Traits::is_infinity(window_sum)) {
+            if (Traits::is_infinity(*result)) {
+                // First non-zero window: just copy window_sum
+                Traits::field_copy(result->x, window_sum.x);
+                Traits::field_copy(result->y, window_sum.y);
+                result->infinity = window_sum.infinity;
+            } else {
+                // Multiply result by 2^window_size before adding window_sum
+                for (int i = 0; i < MSM_WINDOW_SIZE; i++) {
+                    point_double(*result, *result);
+                }
+                // Add window_sum to result
+                PointType temp;
+                point_add(temp, *result, window_sum);
+                Traits::field_copy(result->x, temp.x);
+                Traits::field_copy(result->y, temp.y);
+                result->infinity = temp.infinity;
+            }
+        } else if (!Traits::is_infinity(*result)) {
+            // Window sum is zero but result is not: still need to multiply result
+            for (int i = 0; i < MSM_WINDOW_SIZE; i++) {
+                point_double(*result, *result);
+            }
+        }
+    }
+}
+
+// Legacy kernels for backward compatibility (kept for reference, but not used in new implementation)
 // Template kernel: Compute scalar[i] * points[i] with 64-bit scalars
 template<typename PointType>
 __global__ void kernel_scalar_mul_u64_array(
@@ -676,189 +992,15 @@ __global__ void kernel_g2_reduce_sum(
     }
 }
 
-// Host function for G1 MSM with 64-bit scalars
-// points and scalars are host pointers
-void g1_msm_u64(cudaStream_t stream, uint32_t gpu_index, G1Point& result, const G1Point* points, const uint64_t* scalars, int n) {
-    if (n == 0) {
-        g1_point_at_infinity(result);
-        return;
-    }
-    
-    PANIC_IF_FALSE(n > 0, "g1_msm_u64: invalid size n=%d", n);
-    PANIC_IF_FALSE(points != nullptr && scalars != nullptr, "g1_msm_u64: null pointer argument");
-    
-    cuda_set_device(gpu_index);
-    
-    // Allocate device memory (asynchronous with stream)
-    G1Point* d_points = (G1Point*)cuda_malloc_async(n * sizeof(G1Point), stream, gpu_index);
-    uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(n * sizeof(uint64_t), stream, gpu_index);
-    G1Point* d_results = (G1Point*)cuda_malloc_async(n * sizeof(G1Point), stream, gpu_index);
-    G1Point* d_sum = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    
-    // Copy to device (asynchronous with stream)
-    cuda_memcpy_async_to_gpu(d_points, points, n * sizeof(G1Point), stream, gpu_index);
-    cuda_memcpy_async_to_gpu(d_scalars, scalars, n * sizeof(uint64_t), stream, gpu_index);
-    
-    // Launch kernel to compute scalar[i] * points[i] for each i
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_g1_scalar_mul_u64_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_results, d_points, d_scalars, n);
-    check_cuda_error(cudaGetLastError());
-    
-    // Reduce sum on device
-    kernel_g1_reduce_sum<<<1, 1, 0, stream>>>(d_sum, d_results, n);
-    check_cuda_error(cudaGetLastError());
-    
-    // Copy result back (synchronous after stream sync)
-    cuda_synchronize_stream(stream, gpu_index);
-    cuda_memcpy_async_to_cpu(&result, d_sum, sizeof(G1Point), stream, gpu_index);
-    cuda_synchronize_stream(stream, gpu_index);
-    
-    // Free device memory (asynchronous with stream)
-    cuda_drop_async(d_points, stream, gpu_index);
-    cuda_drop_async(d_scalars, stream, gpu_index);
-    cuda_drop_async(d_results, stream, gpu_index);
-    cuda_drop_async(d_sum, stream, gpu_index);
-}
-
-// G1 MSM with multi-limb scalars
-// points and scalars are host pointers
-void g1_msm(cudaStream_t stream, uint32_t gpu_index, G1Point& result, const G1Point* points, const uint64_t* scalars, int scalar_limbs, int n) {
-    if (n == 0) {
-        g1_point_at_infinity(result);
-        return;
-    }
-    
-    PANIC_IF_FALSE(n > 0, "g1_msm: invalid size n=%d", n);
-    PANIC_IF_FALSE(points != nullptr && scalars != nullptr, "g1_msm: null pointer argument");
-    
-    cuda_set_device(gpu_index);
-    
-    // Allocate device memory (asynchronous with stream)
-    G1Point* d_points = (G1Point*)cuda_malloc_async(n * sizeof(G1Point), stream, gpu_index);
-    uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(n * scalar_limbs * sizeof(uint64_t), stream, gpu_index);
-    G1Point* d_results = (G1Point*)cuda_malloc_async(n * sizeof(G1Point), stream, gpu_index);
-    G1Point* d_sum = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    
-    // Copy to device (asynchronous with stream)
-    cuda_memcpy_async_to_gpu(d_points, points, n * sizeof(G1Point), stream, gpu_index);
-    cuda_memcpy_async_to_gpu(d_scalars, scalars, n * scalar_limbs * sizeof(uint64_t), stream, gpu_index);
-    
-    // Launch kernel to compute scalar[i] * points[i] for each i
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_g1_scalar_mul_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_results, d_points, d_scalars, scalar_limbs, n);
-    check_cuda_error(cudaGetLastError());
-    
-    // Reduce sum on device
-    kernel_g1_reduce_sum<<<1, 1, 0, stream>>>(d_sum, d_results, n);
-    check_cuda_error(cudaGetLastError());
-    
-    // Copy result back (synchronous after stream sync)
-    cuda_synchronize_stream(stream, gpu_index);
-    cuda_memcpy_async_to_cpu(&result, d_sum, sizeof(G1Point), stream, gpu_index);
-    cuda_synchronize_stream(stream, gpu_index);
-    
-    // Free device memory (asynchronous with stream)
-    cuda_drop_async(d_points, stream, gpu_index);
-    cuda_drop_async(d_scalars, stream, gpu_index);
-    cuda_drop_async(d_results, stream, gpu_index);
-    cuda_drop_async(d_sum, stream, gpu_index);
-}
-
-// G2 MSM with 64-bit scalars
-// points and scalars are host pointers
-void g2_msm_u64(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Point* points, const uint64_t* scalars, int n) {
-    if (n == 0) {
-        g2_point_at_infinity(result);
-        return;
-    }
-    
-    PANIC_IF_FALSE(n > 0, "g2_msm_u64: invalid size n=%d", n);
-    PANIC_IF_FALSE(points != nullptr && scalars != nullptr, "g2_msm_u64: null pointer argument");
-    
-    cuda_set_device(gpu_index);
-    
-    // Allocate device memory (asynchronous with stream)
-    G2Point* d_points = (G2Point*)cuda_malloc_async(n * sizeof(G2Point), stream, gpu_index);
-    uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(n * sizeof(uint64_t), stream, gpu_index);
-    G2Point* d_results = (G2Point*)cuda_malloc_async(n * sizeof(G2Point), stream, gpu_index);
-    G2Point* d_sum = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
-    
-    // Copy to device (asynchronous with stream)
-    cuda_memcpy_async_to_gpu(d_points, points, n * sizeof(G2Point), stream, gpu_index);
-    cuda_memcpy_async_to_gpu(d_scalars, scalars, n * sizeof(uint64_t), stream, gpu_index);
-    
-    // Launch kernel to compute scalar[i] * points[i] for each i
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_g2_scalar_mul_u64_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_results, d_points, d_scalars, n);
-    check_cuda_error(cudaGetLastError());
-    
-    // Reduce sum on device
-    kernel_g2_reduce_sum<<<1, 1, 0, stream>>>(d_sum, d_results, n);
-    check_cuda_error(cudaGetLastError());
-    
-    // Copy result back (synchronous after stream sync)
-    cuda_synchronize_stream(stream, gpu_index);
-    cuda_memcpy_async_to_cpu(&result, d_sum, sizeof(G2Point), stream, gpu_index);
-    cuda_synchronize_stream(stream, gpu_index);
-    
-    // Free device memory (asynchronous with stream)
-    cuda_drop_async(d_points, stream, gpu_index);
-    cuda_drop_async(d_scalars, stream, gpu_index);
-    cuda_drop_async(d_results, stream, gpu_index);
-    cuda_drop_async(d_sum, stream, gpu_index);
-}
-
-// G2 MSM with multi-limb scalars
-// points and scalars are host pointers
-void g2_msm(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Point* points, const uint64_t* scalars, int scalar_limbs, int n) {
-    if (n == 0) {
-        g2_point_at_infinity(result);
-        return;
-    }
-    
-    PANIC_IF_FALSE(n > 0, "g2_msm: invalid size n=%d", n);
-    PANIC_IF_FALSE(points != nullptr && scalars != nullptr, "g2_msm: null pointer argument");
-    
-    cuda_set_device(gpu_index);
-    
-    // Allocate device memory (asynchronous with stream)
-    G2Point* d_points = (G2Point*)cuda_malloc_async(n * sizeof(G2Point), stream, gpu_index);
-    uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(n * scalar_limbs * sizeof(uint64_t), stream, gpu_index);
-    G2Point* d_results = (G2Point*)cuda_malloc_async(n * sizeof(G2Point), stream, gpu_index);
-    G2Point* d_sum = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
-    
-    // Copy to device (asynchronous with stream)
-    cuda_memcpy_async_to_gpu(d_points, points, n * sizeof(G2Point), stream, gpu_index);
-    cuda_memcpy_async_to_gpu(d_scalars, scalars, n * scalar_limbs * sizeof(uint64_t), stream, gpu_index);
-    
-    // Launch kernel to compute scalar[i] * points[i] for each i
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_g2_scalar_mul_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_results, d_points, d_scalars, scalar_limbs, n);
-    check_cuda_error(cudaGetLastError());
-    
-    // Reduce sum on device
-    kernel_g2_reduce_sum<<<1, 1, 0, stream>>>(d_sum, d_results, n);
-    check_cuda_error(cudaGetLastError());
-    
-    // Copy result back (synchronous after stream sync)
-    cuda_synchronize_stream(stream, gpu_index);
-    cuda_memcpy_async_to_cpu(&result, d_sum, sizeof(G2Point), stream, gpu_index);
-    cuda_synchronize_stream(stream, gpu_index);
-    
-    // Free device memory (asynchronous with stream)
-    cuda_drop_async(d_points, stream, gpu_index);
-    cuda_drop_async(d_scalars, stream, gpu_index);
-    cuda_drop_async(d_results, stream, gpu_index);
-    cuda_drop_async(d_sum, stream, gpu_index);
-}
-
 // ============================================================================
 // Kernels for async/sync API (work on device pointers)
 // ============================================================================
+
+// Forward declarations for batch conversion kernels
+__global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
+__global__ void kernel_g1_from_montgomery_batch(G1Point* points, int n);
+__global__ void kernel_g2_to_montgomery_batch(G2Point* points, int n);
+__global__ void kernel_g2_from_montgomery_batch(G2Point* points, int n);
 
 // G1 kernels
 __global__ void kernel_g1_add(G1Point* result, const G1Point* p1, const G1Point* p2) {
@@ -875,6 +1017,50 @@ __global__ void kernel_g1_neg(G1Point* result, const G1Point* p) {
 
 __global__ void kernel_g1_point_at_infinity(G1Point* result) {
     g1_point_at_infinity(*result);
+}
+
+__global__ void kernel_g1_to_montgomery(G1Point* result, const G1Point* point) {
+    if (point->infinity) {
+        result->infinity = true;
+        fp_zero(result->x);
+        fp_zero(result->y);
+    } else {
+        fp_to_montgomery(result->x, point->x);
+        fp_to_montgomery(result->y, point->y);
+        result->infinity = false;
+    }
+}
+
+__global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        if (!points[idx].infinity) {
+            fp_to_montgomery(points[idx].x, points[idx].x);
+            fp_to_montgomery(points[idx].y, points[idx].y);
+        }
+    }
+}
+
+__global__ void kernel_g1_from_montgomery(G1Point* result, const G1Point* point) {
+    if (point->infinity) {
+        result->infinity = true;
+        fp_zero(result->x);
+        fp_zero(result->y);
+    } else {
+        fp_from_montgomery(result->x, point->x);
+        fp_from_montgomery(result->y, point->y);
+        result->infinity = false;
+    }
+}
+
+__global__ void kernel_g1_from_montgomery_batch(G1Point* points, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        if (!points[idx].infinity) {
+            fp_from_montgomery(points[idx].x, points[idx].x);
+            fp_from_montgomery(points[idx].y, points[idx].y);
+        }
+    }
 }
 
 __global__ void kernel_g1_scalar_mul_u64(G1Point* result, const G1Point* point, uint64_t scalar) {
@@ -900,6 +1086,58 @@ __global__ void kernel_g2_neg(G2Point* result, const G2Point* p) {
 
 __global__ void kernel_g2_point_at_infinity(G2Point* result) {
     g2_point_at_infinity(*result);
+}
+
+__global__ void kernel_g2_to_montgomery(G2Point* result, const G2Point* point) {
+    if (point->infinity) {
+        result->infinity = true;
+        fp2_zero(result->x);
+        fp2_zero(result->y);
+    } else {
+        fp_to_montgomery(result->x.c0, point->x.c0);
+        fp_to_montgomery(result->x.c1, point->x.c1);
+        fp_to_montgomery(result->y.c0, point->y.c0);
+        fp_to_montgomery(result->y.c1, point->y.c1);
+        result->infinity = false;
+    }
+}
+
+__global__ void kernel_g2_to_montgomery_batch(G2Point* points, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        if (!points[idx].infinity) {
+            fp_to_montgomery(points[idx].x.c0, points[idx].x.c0);
+            fp_to_montgomery(points[idx].x.c1, points[idx].x.c1);
+            fp_to_montgomery(points[idx].y.c0, points[idx].y.c0);
+            fp_to_montgomery(points[idx].y.c1, points[idx].y.c1);
+        }
+    }
+}
+
+__global__ void kernel_g2_from_montgomery(G2Point* result, const G2Point* point) {
+    if (point->infinity) {
+        result->infinity = true;
+        fp2_zero(result->x);
+        fp2_zero(result->y);
+    } else {
+        fp_from_montgomery(result->x.c0, point->x.c0);
+        fp_from_montgomery(result->x.c1, point->x.c1);
+        fp_from_montgomery(result->y.c0, point->y.c0);
+        fp_from_montgomery(result->y.c1, point->y.c1);
+        result->infinity = false;
+    }
+}
+
+__global__ void kernel_g2_from_montgomery_batch(G2Point* points, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        if (!points[idx].infinity) {
+            fp_from_montgomery(points[idx].x.c0, points[idx].x.c0);
+            fp_from_montgomery(points[idx].x.c1, points[idx].x.c1);
+            fp_from_montgomery(points[idx].y.c0, points[idx].y.c0);
+            fp_from_montgomery(points[idx].y.c1, points[idx].y.c1);
+        }
+    }
 }
 
 __global__ void kernel_g2_scalar_mul_u64(G2Point* result, const G2Point* point, uint64_t scalar) {
@@ -959,6 +1197,30 @@ void g1_point_at_infinity_async(cudaStream_t stream, uint32_t gpu_index, G1Point
 
 void g1_point_at_infinity(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result) {
     g1_point_at_infinity_async(stream, gpu_index, d_result);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g1_to_montgomery_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point) {
+    PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr, "g1_to_montgomery_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g1_to_montgomery<<<1, 1, 0, stream>>>(d_result, d_point);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_to_montgomery(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point) {
+    g1_to_montgomery_async(stream, gpu_index, d_result, d_point);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g1_from_montgomery_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point) {
+    PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr, "g1_from_montgomery_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g1_from_montgomery<<<1, 1, 0, stream>>>(d_result, d_point);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_from_montgomery(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point) {
+    g1_from_montgomery_async(stream, gpu_index, d_result, d_point);
     cuda_synchronize_stream(stream, gpu_index);
 }
 
@@ -1038,6 +1300,30 @@ void g2_point_at_infinity(cudaStream_t stream, uint32_t gpu_index, G2Point* d_re
     cuda_synchronize_stream(stream, gpu_index);
 }
 
+void g2_to_montgomery_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point) {
+    PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr, "g2_to_montgomery_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g2_to_montgomery<<<1, 1, 0, stream>>>(d_result, d_point);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_to_montgomery(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point) {
+    g2_to_montgomery_async(stream, gpu_index, d_result, d_point);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g2_from_montgomery_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point) {
+    PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr, "g2_from_montgomery_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g2_from_montgomery<<<1, 1, 0, stream>>>(d_result, d_point);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_from_montgomery(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point) {
+    g2_from_montgomery_async(stream, gpu_index, d_result, d_point);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
 void g2_scalar_mul_u64_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, uint64_t scalar) {
     PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr, "g2_scalar_mul_u64_async: null pointer argument");
     cuda_set_device(gpu_index);
@@ -1073,7 +1359,7 @@ void g2_scalar_mul(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, c
 // Helper to get point_at_infinity_async function pointer - we'll use function overloading instead
 // Actually, let's just keep the implementations separate but use template kernels
 
-// G1 MSM with 64-bit scalars - async version
+// G1 MSM with 64-bit scalars - async version (Pippenger algorithm)
 void g1_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1Point* d_scratch, int n) {
     if (n == 0) {
         g1_point_at_infinity_async(stream, gpu_index, d_result);
@@ -1085,15 +1371,56 @@ void g1_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result
     
     cuda_set_device(gpu_index);
     
-    // Launch template kernel
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_scalar_mul_u64_array<G1Point><<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, n);
-    check_cuda_error(cudaGetLastError());
+    // Use d_scratch as bucket storage (need MSM_BUCKET_COUNT buckets)
+    G1Point* d_buckets = d_scratch;
     
-    // Reduce sum directly into result
-    kernel_reduce_sum<G1Point><<<1, 1, 0, stream>>>(d_result, d_scratch, n);
-    check_cuda_error(cudaGetLastError());
+    // Calculate number of windows (64 bits / window_size)
+    int num_windows = (64 + MSM_WINDOW_SIZE - 1) / MSM_WINDOW_SIZE;
+    
+    // Initialize result to point at infinity
+    g1_point_at_infinity_async(stream, gpu_index, d_result);
+    
+    // Process each window from MSB to LSB
+    int threadsPerBlock = 256;
+    int num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+    
+    // Scratch space layout:
+    // - d_scratch[0 .. num_blocks * MSM_BUCKET_COUNT - 1]: per-block bucket accumulations
+    // - d_scratch[num_blocks * MSM_BUCKET_COUNT .. (num_blocks + 1) * MSM_BUCKET_COUNT - 1]: final buckets
+    G1Point* d_block_buckets = d_scratch;
+    G1Point* d_final_buckets = d_scratch + num_blocks * MSM_BUCKET_COUNT;
+    
+    for (int window_idx = num_windows - 1; window_idx >= 0; window_idx--) {
+        // Clear final buckets
+        int clear_blocks = (MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
+        kernel_clear_buckets<G1Point><<<clear_blocks, threadsPerBlock, 0, stream>>>(d_final_buckets, MSM_BUCKET_COUNT);
+        check_cuda_error(cudaGetLastError());
+        
+        // Clear block buckets
+        int clear_block_blocks = (num_blocks * MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
+        kernel_clear_buckets<G1Point><<<clear_block_blocks, threadsPerBlock, 0, stream>>>(d_block_buckets, num_blocks * MSM_BUCKET_COUNT);
+        check_cuda_error(cudaGetLastError());
+        
+        // Phase 1: Accumulate points into per-block buckets (single-pass, all points processed in parallel)
+        // Shared memory: MSM_BUCKET_COUNT buckets + threadsPerBlock points + threadsPerBlock bucket indices
+        size_t shared_mem_size = MSM_BUCKET_COUNT * sizeof(G1Point) + threadsPerBlock * sizeof(G1Point) + threadsPerBlock * sizeof(int);
+        kernel_accumulate_buckets_u64<G1Point><<<num_blocks, threadsPerBlock, shared_mem_size, stream>>>(
+            d_block_buckets, d_points, d_scalars, n, window_idx, MSM_WINDOW_SIZE
+        );
+        check_cuda_error(cudaGetLastError());
+        
+        // Phase 2: Reduce per-block bucket contributions to final buckets
+        int reduce_threads = 256;
+        int reduce_blocks = (MSM_BUCKET_COUNT + reduce_threads - 1) / reduce_threads;
+        kernel_reduce_buckets<G1Point><<<reduce_blocks, reduce_threads, 0, stream>>>(
+            d_final_buckets, d_block_buckets, num_blocks, MSM_BUCKET_COUNT
+        );
+        check_cuda_error(cudaGetLastError());
+        
+        // Combine final buckets and accumulate into result
+        kernel_combine_buckets<G1Point><<<1, 1, 0, stream>>>(d_result, d_final_buckets, MSM_BUCKET_COUNT, window_idx);
+        check_cuda_error(cudaGetLastError());
+    }
 }
 
 void g1_msm_u64(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1Point* d_scratch, int n) {
@@ -1101,7 +1428,7 @@ void g1_msm_u64(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, cons
     cuda_synchronize_stream(stream, gpu_index);
 }
 
-// G1 MSM with multi-limb scalars - async version
+// G1 MSM with multi-limb scalars - async version (Pippenger algorithm)
 void g1_msm_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G1Point* d_scratch, int n) {
     if (n == 0) {
         g1_point_at_infinity_async(stream, gpu_index, d_result);
@@ -1113,15 +1440,35 @@ void g1_msm_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, co
     
     cuda_set_device(gpu_index);
     
-    // Launch template kernel
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_scalar_mul_array<G1Point><<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, scalar_limbs, n);
-    check_cuda_error(cudaGetLastError());
+    // Use d_scratch as bucket storage (need MSM_BUCKET_COUNT buckets)
+    G1Point* d_buckets = d_scratch;
     
-    // Reduce sum directly into result
-    kernel_reduce_sum<G1Point><<<1, 1, 0, stream>>>(d_result, d_scratch, n);
-    check_cuda_error(cudaGetLastError());
+    // Calculate number of windows
+    int total_bits = scalar_limbs * 64;
+    int num_windows = (total_bits + MSM_WINDOW_SIZE - 1) / MSM_WINDOW_SIZE;
+    
+    // Initialize result to point at infinity
+    g1_point_at_infinity_async(stream, gpu_index, d_result);
+    
+    // Process each window from MSB to LSB
+    int threadsPerBlock = 256;
+    for (int window_idx = num_windows - 1; window_idx >= 0; window_idx--) {
+        // Clear buckets
+        int clear_blocks = (MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
+        kernel_clear_buckets<G1Point><<<clear_blocks, threadsPerBlock, 0, stream>>>(d_buckets, MSM_BUCKET_COUNT);
+        check_cuda_error(cudaGetLastError());
+        
+        // Accumulate points into buckets (one block per bucket)
+        size_t shared_mem_size = threadsPerBlock * sizeof(G1Point);
+        kernel_accumulate_buckets_multi<G1Point><<<MSM_BUCKET_COUNT, threadsPerBlock, shared_mem_size, stream>>>(
+            d_buckets, d_points, d_scalars, scalar_limbs, n, window_idx, MSM_WINDOW_SIZE
+        );
+        check_cuda_error(cudaGetLastError());
+        
+        // Combine buckets and accumulate into result
+        kernel_combine_buckets<G1Point><<<1, 1, 0, stream>>>(d_result, d_buckets, MSM_BUCKET_COUNT, window_idx);
+        check_cuda_error(cudaGetLastError());
+    }
 }
 
 void g1_msm(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G1Point* d_scratch, int n) {
@@ -1129,7 +1476,7 @@ void g1_msm(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1
     cuda_synchronize_stream(stream, gpu_index);
 }
 
-// G2 MSM with 64-bit scalars - async version
+// G2 MSM with 64-bit scalars - async version (Pippenger algorithm)
 void g2_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, G2Point* d_scratch, int n) {
     if (n == 0) {
         g2_point_at_infinity_async(stream, gpu_index, d_result);
@@ -1141,15 +1488,55 @@ void g2_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result
     
     cuda_set_device(gpu_index);
     
-    // Launch template kernel
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_scalar_mul_u64_array<G2Point><<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, n);
-    check_cuda_error(cudaGetLastError());
+    // Calculate number of windows (64 bits / window_size)
+    int num_windows = (64 + MSM_WINDOW_SIZE - 1) / MSM_WINDOW_SIZE;
     
-    // Reduce sum directly into result
-    kernel_reduce_sum<G2Point><<<1, 1, 0, stream>>>(d_result, d_scratch, n);
-    check_cuda_error(cudaGetLastError());
+    // Initialize result to point at infinity
+    g2_point_at_infinity_async(stream, gpu_index, d_result);
+    
+    // Process each window from MSB to LSB
+    // Use fewer threads per block for G2Point to avoid exceeding shared memory limits
+    // G2Point is larger (Fp2 fields), so we use 128 threads instead of 256
+    int threadsPerBlock = 128;
+    int num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+    
+    // Scratch space layout:
+    // - d_scratch[0 .. num_blocks * MSM_BUCKET_COUNT - 1]: per-block bucket accumulations
+    // - d_scratch[num_blocks * MSM_BUCKET_COUNT .. (num_blocks + 1) * MSM_BUCKET_COUNT - 1]: final buckets
+    G2Point* d_block_buckets = d_scratch;
+    G2Point* d_final_buckets = d_scratch + num_blocks * MSM_BUCKET_COUNT;
+    
+    for (int window_idx = num_windows - 1; window_idx >= 0; window_idx--) {
+        // Clear final buckets
+        int clear_blocks = (MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
+        kernel_clear_buckets<G2Point><<<clear_blocks, threadsPerBlock, 0, stream>>>(d_final_buckets, MSM_BUCKET_COUNT);
+        check_cuda_error(cudaGetLastError());
+        
+        // Clear block buckets
+        int clear_block_blocks = (num_blocks * MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
+        kernel_clear_buckets<G2Point><<<clear_block_blocks, threadsPerBlock, 0, stream>>>(d_block_buckets, num_blocks * MSM_BUCKET_COUNT);
+        check_cuda_error(cudaGetLastError());
+        
+        // Phase 1: Accumulate points into per-block buckets (single-pass, all points processed in parallel)
+        // Shared memory: MSM_BUCKET_COUNT buckets + threadsPerBlock points + threadsPerBlock bucket indices
+        size_t shared_mem_size = MSM_BUCKET_COUNT * sizeof(G2Point) + threadsPerBlock * sizeof(G2Point) + threadsPerBlock * sizeof(int);
+        kernel_accumulate_buckets_u64<G2Point><<<num_blocks, threadsPerBlock, shared_mem_size, stream>>>(
+            d_block_buckets, d_points, d_scalars, n, window_idx, MSM_WINDOW_SIZE
+        );
+        check_cuda_error(cudaGetLastError());
+        
+        // Phase 2: Reduce per-block bucket contributions to final buckets
+        int reduce_threads = 128;
+        int reduce_blocks = (MSM_BUCKET_COUNT + reduce_threads - 1) / reduce_threads;
+        kernel_reduce_buckets<G2Point><<<reduce_blocks, reduce_threads, 0, stream>>>(
+            d_final_buckets, d_block_buckets, num_blocks, MSM_BUCKET_COUNT
+        );
+        check_cuda_error(cudaGetLastError());
+        
+        // Combine final buckets and accumulate into result
+        kernel_combine_buckets<G2Point><<<1, 1, 0, stream>>>(d_result, d_final_buckets, MSM_BUCKET_COUNT, window_idx);
+        check_cuda_error(cudaGetLastError());
+    }
 }
 
 void g2_msm_u64(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, G2Point* d_scratch, int n) {
@@ -1157,7 +1544,7 @@ void g2_msm_u64(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, cons
     cuda_synchronize_stream(stream, gpu_index);
 }
 
-// G2 MSM with multi-limb scalars - async version
+// G2 MSM with multi-limb scalars - async version (Pippenger algorithm)
 void g2_msm_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G2Point* d_scratch, int n) {
     if (n == 0) {
         g2_point_at_infinity_async(stream, gpu_index, d_result);
@@ -1169,15 +1556,36 @@ void g2_msm_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, co
     
     cuda_set_device(gpu_index);
     
-    // Launch template kernel
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
-    kernel_scalar_mul_array<G2Point><<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, scalar_limbs, n);
-    check_cuda_error(cudaGetLastError());
+    // Use d_scratch as bucket storage (need MSM_BUCKET_COUNT buckets)
+    G2Point* d_buckets = d_scratch;
     
-    // Reduce sum directly into result
-    kernel_reduce_sum<G2Point><<<1, 1, 0, stream>>>(d_result, d_scratch, n);
-    check_cuda_error(cudaGetLastError());
+    // Calculate number of windows
+    int total_bits = scalar_limbs * 64;
+    int num_windows = (total_bits + MSM_WINDOW_SIZE - 1) / MSM_WINDOW_SIZE;
+    
+    // Initialize result to point at infinity
+    g2_point_at_infinity_async(stream, gpu_index, d_result);
+    
+    // Process each window from MSB to LSB
+    // Use fewer threads per block for G2Point to avoid exceeding shared memory limits
+    int threadsPerBlock = 128;
+    for (int window_idx = num_windows - 1; window_idx >= 0; window_idx--) {
+        // Clear buckets
+        int clear_blocks = (MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
+        kernel_clear_buckets<G2Point><<<clear_blocks, threadsPerBlock, 0, stream>>>(d_buckets, MSM_BUCKET_COUNT);
+        check_cuda_error(cudaGetLastError());
+        
+        // Accumulate points into buckets (one block per bucket)
+        size_t shared_mem_size = threadsPerBlock * sizeof(G2Point);
+        kernel_accumulate_buckets_multi<G2Point><<<MSM_BUCKET_COUNT, threadsPerBlock, shared_mem_size, stream>>>(
+            d_buckets, d_points, d_scalars, scalar_limbs, n, window_idx, MSM_WINDOW_SIZE
+        );
+        check_cuda_error(cudaGetLastError());
+        
+        // Combine buckets and accumulate into result
+        kernel_combine_buckets<G2Point><<<1, 1, 0, stream>>>(d_result, d_buckets, MSM_BUCKET_COUNT, window_idx);
+        check_cuda_error(cudaGetLastError());
+    }
 }
 
 void g2_msm(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G2Point* d_scratch, int n) {

@@ -142,19 +142,36 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
         GTEST_SKIP() << "G1 generator not set - please provide generator points from tfhe-rs";
     }
     
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    int threadsPerBlock = 256;
+    int num_blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1Point);
+    
     // Allocate device memory for points and scalars
     G1Point* d_points = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
     G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    G1Point* d_scratch = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
+    G1Point* d_scratch = (G1Point*)cuda_malloc_async(scratch_size, stream, gpu_index);
     G1Point* d_expected = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    
+    // Initialize allocated memory to zero to avoid uninitialized access warnings
+    cuda_memset_async(d_result, 0, sizeof(G1Point), stream, gpu_index);
+    cuda_memset_async(d_expected, 0, sizeof(G1Point), stream, gpu_index);
+    cuda_memset_async(d_G, 0, sizeof(G1Point), stream, gpu_index);
     
     // Prepare host data
+    // Convert generator back to normal form for test points (generator is in Montgomery)
+    G1Point G_normal;
+    fp_from_montgomery(G_normal.x, G.x);
+    fp_from_montgomery(G_normal.y, G.y);
+    G_normal.infinity = G.infinity;
+    
     G1Point* h_points = (G1Point*)malloc(N * sizeof(G1Point));
     for (uint64_t i = 0; i < N; i++) {
-        fp_copy(h_points[i].x, G.x);
-        fp_copy(h_points[i].y, G.y);
-        h_points[i].infinity = G.infinity;
+        fp_copy(h_points[i].x, G_normal.x);
+        fp_copy(h_points[i].y, G_normal.y);
+        h_points[i].infinity = G_normal.infinity;
     }
     
     uint64_t* h_scalars = (uint64_t*)malloc(N * sizeof(uint64_t));
@@ -166,8 +183,14 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
     cuda_memcpy_async_to_gpu(d_points, h_points, N * sizeof(G1Point), stream, gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, h_scalars, N * sizeof(uint64_t), stream, gpu_index);
     
-    // Copy generator to device for expected result computation
-    G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    // Convert points to Montgomery form (required for performance)
+    int threadsPerBlock_conv = 256;
+    int blocks_conv = (N + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
+    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
+    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, stream>>>(d_points, N);
+    check_cuda_error(cudaGetLastError());
+    
+    // Copy generator to device (generator is already in Montgomery form from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
     
     // Compute MSM on device
@@ -177,13 +200,23 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
     uint64_t expected_scalar = triangular_number(N);
     g1_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
     
+    // Convert results back from Montgomery form before comparing
+    G1Point* d_result_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_expected_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    g1_from_montgomery(stream, gpu_index, d_result_normal, d_result);
+    g1_from_montgomery(stream, gpu_index, d_expected_normal, d_expected);
+    
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);
     G1Point msm_result;
     G1Point expected_result;
-    cuda_memcpy_async_to_cpu(&msm_result, d_result, sizeof(G1Point), stream, gpu_index);
-    cuda_memcpy_async_to_cpu(&expected_result, d_expected, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result_normal, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&expected_result, d_expected_normal, sizeof(G1Point), stream, gpu_index);
     cuda_synchronize_stream(stream, gpu_index);
+    
+    // Cleanup
+    cuda_drop_async(d_result_normal, stream, gpu_index);
+    cuda_drop_async(d_expected_normal, stream, gpu_index);
     
     // Compare results
     EXPECT_EQ(msm_result.infinity, expected_result.infinity);
@@ -222,19 +255,31 @@ TEST_F(MSMTest, G1MSMWithGeneratorBasicTest) {
     
     std::cout << "\n=== G1MSMWithGeneratorBasicTest (N=" << N << ") ===" << std::endl;
     
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    int threadsPerBlock = 256;
+    int num_blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1Point);
+    
     // Allocate device memory
     G1Point* d_points = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
     G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_scratch = (G1Point*)cuda_malloc_async(scratch_size, stream, gpu_index);
     G1Point* d_expected = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     
     // Prepare host data
+    // Convert generator back to normal form for test points (generator is in Montgomery)
+    G1Point G_normal;
+    fp_from_montgomery(G_normal.x, G.x);
+    fp_from_montgomery(G_normal.y, G.y);
+    G_normal.infinity = G.infinity;
+    
     G1Point* h_points = (G1Point*)malloc(N * sizeof(G1Point));
     for (uint64_t i = 0; i < N; i++) {
-        fp_copy(h_points[i].x, G.x);
-        fp_copy(h_points[i].y, G.y);
-        h_points[i].infinity = G.infinity;
+        fp_copy(h_points[i].x, G_normal.x);
+        fp_copy(h_points[i].y, G_normal.y);
+        h_points[i].infinity = G_normal.infinity;
     }
     
     uint64_t* h_scalars = (uint64_t*)malloc(N * sizeof(uint64_t));
@@ -258,6 +303,15 @@ TEST_F(MSMTest, G1MSMWithGeneratorBasicTest) {
     // Copy to device
     cuda_memcpy_async_to_gpu(d_points, h_points, N * sizeof(G1Point), stream, gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, h_scalars, N * sizeof(uint64_t), stream, gpu_index);
+    
+    // Convert points to Montgomery form (required for performance)
+    int threadsPerBlock_conv = 256;
+    int blocks_conv = (N + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
+    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
+    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, stream>>>(d_points, N);
+    check_cuda_error(cudaGetLastError());
+    
+    // Copy generator to device (generator is already in Montgomery from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
     
     // Compute MSM on device
@@ -317,20 +371,38 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
         GTEST_SKIP() << "G2 generator not set - please provide generator points from tfhe-rs";
     }
     
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    int threadsPerBlock = 128;
+    int num_blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G2Point);
+    
     // Allocate device memory
     G2Point* d_points = (G2Point*)cuda_malloc_async(N * sizeof(G2Point), stream, gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
     G2Point* d_result = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
-    G2Point* d_scratch = (G2Point*)cuda_malloc_async(N * sizeof(G2Point), stream, gpu_index);
+    G2Point* d_scratch = (G2Point*)cuda_malloc_async(scratch_size, stream, gpu_index);
     G2Point* d_expected = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
     G2Point* d_G = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
     
+    // Initialize allocated memory to zero to avoid uninitialized access warnings
+    cuda_memset_async(d_result, 0, sizeof(G2Point), stream, gpu_index);
+    cuda_memset_async(d_expected, 0, sizeof(G2Point), stream, gpu_index);
+    cuda_memset_async(d_G, 0, sizeof(G2Point), stream, gpu_index);
+    
     // Prepare host data
+    // Convert generator back to normal form for test points (generator is in Montgomery)
+    G2Point G_normal;
+    fp_from_montgomery(G_normal.x.c0, G.x.c0);
+    fp_from_montgomery(G_normal.x.c1, G.x.c1);
+    fp_from_montgomery(G_normal.y.c0, G.y.c0);
+    fp_from_montgomery(G_normal.y.c1, G.y.c1);
+    G_normal.infinity = G.infinity;
+    
     G2Point* h_points = (G2Point*)malloc(N * sizeof(G2Point));
     for (uint64_t i = 0; i < N; i++) {
-        fp2_copy(h_points[i].x, G.x);
-        fp2_copy(h_points[i].y, G.y);
-        h_points[i].infinity = G.infinity;
+        fp2_copy(h_points[i].x, G_normal.x);
+        fp2_copy(h_points[i].y, G_normal.y);
+        h_points[i].infinity = G_normal.infinity;
     }
     
     uint64_t* h_scalars = (uint64_t*)malloc(N * sizeof(uint64_t));
@@ -341,6 +413,15 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
     // Copy to device
     cuda_memcpy_async_to_gpu(d_points, h_points, N * sizeof(G2Point), stream, gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, h_scalars, N * sizeof(uint64_t), stream, gpu_index);
+    
+    // Convert points to Montgomery form (required for performance)
+    int threadsPerBlock_conv = 128;
+    int blocks_conv = (N + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
+    extern __global__ void kernel_g2_to_montgomery_batch(G2Point* points, int n);
+    kernel_g2_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, stream>>>(d_points, N);
+    check_cuda_error(cudaGetLastError());
+    
+    // Copy generator to device (generator is already in Montgomery form from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G2Point), stream, gpu_index);
     
     // Compute MSM on device
@@ -350,13 +431,23 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
     uint64_t expected_scalar = triangular_number(N);
     g2_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
     
+    // Convert results back from Montgomery form before comparing
+    G2Point* d_result_normal = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
+    G2Point* d_expected_normal = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
+    g2_from_montgomery(stream, gpu_index, d_result_normal, d_result);
+    g2_from_montgomery(stream, gpu_index, d_expected_normal, d_expected);
+    
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);
     G2Point msm_result;
     G2Point expected_result;
-    cuda_memcpy_async_to_cpu(&msm_result, d_result, sizeof(G2Point), stream, gpu_index);
-    cuda_memcpy_async_to_cpu(&expected_result, d_expected, sizeof(G2Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result_normal, sizeof(G2Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&expected_result, d_expected_normal, sizeof(G2Point), stream, gpu_index);
     cuda_synchronize_stream(stream, gpu_index);
+    
+    // Cleanup
+    cuda_drop_async(d_result_normal, stream, gpu_index);
+    cuda_drop_async(d_expected_normal, stream, gpu_index);
     
     // Compare results
     EXPECT_EQ(msm_result.infinity, expected_result.infinity);
@@ -387,20 +478,31 @@ TEST_F(MSMTest, G1MSMLargeN) {
         GTEST_SKIP() << "G1 generator not set";
     }
     
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    int threadsPerBlock = 256;
+    int num_blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1Point);
+    
     // Allocate device memory
     G1Point* d_points = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
     G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    G1Point* d_scratch = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
+    G1Point* d_scratch = (G1Point*)cuda_malloc_async(scratch_size, stream, gpu_index);
     G1Point* d_expected = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     
     // Prepare host data
+    // Convert generator back to normal form for test points (generator is in Montgomery)
+    G1Point G_normal;
+    fp_from_montgomery(G_normal.x, G.x);
+    fp_from_montgomery(G_normal.y, G.y);
+    G_normal.infinity = G.infinity;
+    
     G1Point* h_points = (G1Point*)malloc(N * sizeof(G1Point));
     for (uint64_t i = 0; i < N; i++) {
-        fp_copy(h_points[i].x, G.x);
-        fp_copy(h_points[i].y, G.y);
-        h_points[i].infinity = G.infinity;
+        fp_copy(h_points[i].x, G_normal.x);
+        fp_copy(h_points[i].y, G_normal.y);
+        h_points[i].infinity = G_normal.infinity;
     }
     
     uint64_t* h_scalars = (uint64_t*)malloc(N * sizeof(uint64_t));
@@ -411,6 +513,15 @@ TEST_F(MSMTest, G1MSMLargeN) {
     // Copy to device
     cuda_memcpy_async_to_gpu(d_points, h_points, N * sizeof(G1Point), stream, gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, h_scalars, N * sizeof(uint64_t), stream, gpu_index);
+    
+    // Convert points to Montgomery form (required for performance)
+    int threadsPerBlock_conv = 256;
+    int blocks_conv = (N + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
+    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
+    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, stream>>>(d_points, N);
+    check_cuda_error(cudaGetLastError());
+    
+    // Copy generator to device (generator is already in Montgomery from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
     
     // Compute MSM on device
@@ -420,12 +531,23 @@ TEST_F(MSMTest, G1MSMLargeN) {
     uint64_t expected_scalar = triangular_number(N);
     g1_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
     
+    // Convert results back from Montgomery form before comparing
+    G1Point* d_result_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_expected_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    g1_from_montgomery(stream, gpu_index, d_result_normal, d_result);
+    g1_from_montgomery(stream, gpu_index, d_expected_normal, d_expected);
+    
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);
     G1Point msm_result;
     G1Point expected_result;
-    cuda_memcpy_async_to_cpu(&msm_result, d_result, sizeof(G1Point), stream, gpu_index);
-    cuda_memcpy_async_to_cpu(&expected_result, d_expected, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result_normal, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&expected_result, d_expected_normal, sizeof(G1Point), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
+    
+    // Cleanup
+    cuda_drop_async(d_result_normal, stream, gpu_index);
+    cuda_drop_async(d_expected_normal, stream, gpu_index);
     cuda_synchronize_stream(stream, gpu_index);
     
     EXPECT_EQ(msm_result.infinity, expected_result.infinity);

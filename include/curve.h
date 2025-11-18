@@ -118,26 +118,15 @@ __host__ __device__ const G2Point& g2_generator();
 // Multi-Scalar Multiplication (MSM)
 // Computes: result = sum(scalars[i] * points[i]) for i = 0 to n-1
 // Uses Pippenger's algorithm (bucket method) for efficiency
+// The algorithm splits scalars into windows and uses buckets to accumulate points,
+// significantly reducing the number of point operations compared to naive methods
+
+// Pippenger algorithm constants
+#define MSM_WINDOW_SIZE 4  // 4-bit windows
+#define MSM_BUCKET_COUNT 16  // 2^MSM_WINDOW_SIZE buckets (0-15)
 
 // MSM for G1
 // stream: CUDA stream
-// gpu_index: GPU device index
-// result: output point (host memory)
-// points: array of G1 points (host memory, will be copied to device)
-// scalars: array of scalars, each as uint64_t array (host memory, will be copied to device)
-// scalar_limbs: number of limbs per scalar
-// n: number of points/scalars
-void g1_msm(cudaStream_t stream, uint32_t gpu_index, G1Point& result, const G1Point* points, const uint64_t* scalars, int scalar_limbs, int n);
-
-// MSM for G1 with 64-bit scalars (simpler interface)
-void g1_msm_u64(cudaStream_t stream, uint32_t gpu_index, G1Point& result, const G1Point* points, const uint64_t* scalars, int n);
-
-// MSM for G2
-void g2_msm(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Point* points, const uint64_t* scalars, int scalar_limbs, int n);
-
-// MSM for G2 with 64-bit scalars (simpler interface)
-void g2_msm_u64(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Point* points, const uint64_t* scalars, int n);
-
 // ============================================================================
 // Async/Sync API for curve operations
 // ============================================================================
@@ -172,6 +161,15 @@ void g1_scalar_mul(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, c
 void g1_point_at_infinity_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result);
 void g1_point_at_infinity(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result);
 
+// Convert G1 point to Montgomery form: d_result = to_montgomery(d_point)
+// NOTE: All point operations assume points are in Montgomery form for performance
+void g1_to_montgomery_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point);
+void g1_to_montgomery(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point);
+
+// Convert G1 point from Montgomery form: d_result = from_montgomery(d_point)
+void g1_from_montgomery_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point);
+void g1_from_montgomery(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point);
+
 // G2 Point operations (all device pointers)
 
 // Point addition: d_result = d_p1 + d_p2
@@ -198,13 +196,27 @@ void g2_scalar_mul(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, c
 void g2_point_at_infinity_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result);
 void g2_point_at_infinity(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result);
 
+// Convert G2 point to Montgomery form: d_result = to_montgomery(d_point)
+// NOTE: All point operations assume points are in Montgomery form for performance
+void g2_to_montgomery_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point);
+void g2_to_montgomery(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point);
+
+// Convert G2 point from Montgomery form: d_result = from_montgomery(d_point)
+void g2_from_montgomery_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point);
+void g2_from_montgomery(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point);
+
 // ============================================================================
 // Refactored MSM API (device pointers only, no allocations/copies/frees)
 // ============================================================================
 // All pointers are device pointers (already allocated by caller)
 // Temporary buffer must be provided by caller:
-//   - d_scratch: buffer of size n * sizeof(G1Point/G2Point) for intermediate results
-// Uses async operations internally
+//   - d_scratch: buffer of size (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1Point/G2Point)
+//     where num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock (typically 256 threads per block)
+//     This provides space for:
+//       * num_blocks * MSM_BUCKET_COUNT points for per-block bucket accumulations
+//       * MSM_BUCKET_COUNT points for final buckets
+//     MSM_BUCKET_COUNT is typically 16 (for 4-bit windows)
+// Uses Pippenger algorithm (bucket method) with sppark-style single-pass accumulation
 
 // MSM for G1 with 64-bit scalars
 void g1_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1Point* d_scratch, int n);

@@ -112,7 +112,12 @@ __host__ __device__ void fp_neg(Fp& c, const Fp& a);
 // Inversion: c = a^(-1) mod p
 // Uses Fermat's little theorem: a^(p-2) = a^(-1) mod p
 // Returns c = 0 if a = 0 (division by zero)
+// NOTE: Assumes input is in normal form and converts to/from Montgomery
 __host__ __device__ void fp_inv(Fp& c, const Fp& a);
+
+// Montgomery inversion: c = a^(-1) mod p (all in Montgomery form)
+// NOTE: Input and output are in Montgomery form (no conversions)
+__host__ __device__ void fp_mont_inv(Fp& c, const Fp& a);
 
 // Division: c = a / b mod p = a * b^(-1) mod p
 // Returns c = 0 if b = 0 (division by zero)

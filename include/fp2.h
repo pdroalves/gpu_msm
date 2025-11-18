@@ -42,7 +42,12 @@ __host__ __device__ void fp2_sub(Fp2& c, const Fp2& a, const Fp2& b);
 
 // Multiplication: c = a * b
 // (a0 + a1*i) * (b0 + b1*i) = (a0*b0 - a1*b1) + (a0*b1 + a1*b0)*i
+// NOTE: Assumes inputs are in normal form and converts to/from Montgomery
 __host__ __device__ void fp2_mul(Fp2& c, const Fp2& a, const Fp2& b);
+
+// Montgomery multiplication: c = a * b (all in Montgomery form)
+// NOTE: All inputs and outputs are in Montgomery form (no conversions)
+__host__ __device__ void fp2_mont_mul(Fp2& c, const Fp2& a, const Fp2& b);
 
 // Squaring: c = a^2
 // (a0 + a1*i)^2 = (a0^2 - a1^2) + 2*a0*a1*i
@@ -57,7 +62,12 @@ __host__ __device__ void fp2_conjugate(Fp2& c, const Fp2& a);
 
 // Inversion: c = a^(-1)
 // Uses the formula: (a0 + a1*i)^(-1) = (a0 - a1*i) / (a0^2 + a1^2)
+// NOTE: Assumes inputs are in normal form and converts to/from Montgomery
 __host__ __device__ void fp2_inv(Fp2& c, const Fp2& a);
+
+// Montgomery inversion: c = a^(-1) (all in Montgomery form)
+// NOTE: All inputs and outputs are in Montgomery form (no conversions)
+__host__ __device__ void fp2_mont_inv(Fp2& c, const Fp2& a);
 
 // Division: c = a / b = a * b^(-1)
 __host__ __device__ void fp2_div(Fp2& c, const Fp2& a, const Fp2& b);

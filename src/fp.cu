@@ -561,6 +561,7 @@ __host__ __device__ void fp_pow(Fp& c, const Fp& a, const uint64_t* e, int e_lim
 
 // Inversion: c = a^(-1) mod p
 // Uses Fermat's little theorem: a^(p-2) = a^(-1) mod p
+// NOTE: Assumes input is in normal form and converts to/from Montgomery
 __host__ __device__ void fp_inv(Fp& c, const Fp& a) {
     if (fp_is_zero(a)) {
         // Division by zero: return 0
@@ -580,6 +581,33 @@ __host__ __device__ void fp_inv(Fp& c, const Fp& a) {
     
     // Compute a^(p-2) mod p
     fp_pow_internal(c, a, p_minus_2.limb, FP_LIMBS);
+}
+
+// Montgomery inversion: c = a^(-1) mod p (all in Montgomery form)
+// NOTE: Input and output are in Montgomery form (no conversions)
+__host__ __device__ void fp_mont_inv(Fp& c, const Fp& a) {
+    if (fp_is_zero(a)) {
+        fp_zero(c);
+        return;
+    }
+    
+    // Convert from Montgomery to normal form for fp_pow_internal
+    Fp a_normal;
+    fp_from_montgomery(a_normal, a);
+    
+    // Compute a_normal^(p-2) mod p (fp_pow_internal handles conversions)
+    const Fp& p = fp_modulus();
+    Fp p_minus_2;
+    Fp two;
+    fp_one(two);
+    two.limb[0] = 2;
+    fp_sub(p_minus_2, p, two);
+    
+    Fp result_normal;
+    fp_pow_internal(result_normal, a_normal, p_minus_2.limb, FP_LIMBS);
+    
+    // Convert result back to Montgomery form
+    fp_to_montgomery(c, result_normal);
 }
 
 // Division: c = a / b mod p = a * b^(-1) mod p

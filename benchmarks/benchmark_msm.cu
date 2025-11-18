@@ -153,11 +153,16 @@ static void BM_G1_MSM_U64(benchmark::State& state) {
     const int n = static_cast<int>(state.range(0));
     std::mt19937_64 rng(42);
     
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    const int threadsPerBlock = 256;
+    const int num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+    const size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1Point);
+    
     // Allocate device memory
     G1Point* d_points = (G1Point*)cuda_malloc_async(n * sizeof(G1Point), g_benchmark_stream, g_gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(n * sizeof(uint64_t), g_benchmark_stream, g_gpu_index);
     G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), g_benchmark_stream, g_gpu_index);
-    G1Point* d_scratch = (G1Point*)cuda_malloc_async(n * sizeof(G1Point), g_benchmark_stream, g_gpu_index);
+    G1Point* d_scratch = (G1Point*)cuda_malloc_async(scratch_size, g_benchmark_stream, g_gpu_index);
     
     // Prepare host data
     G1Point* h_points = new G1Point[n];
@@ -172,13 +177,28 @@ static void BM_G1_MSM_U64(benchmark::State& state) {
     // Copy to device (once, before benchmark loop)
     cuda_memcpy_async_to_gpu(d_points, h_points, n * sizeof(G1Point), g_benchmark_stream, g_gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, h_scalars, n * sizeof(uint64_t), g_benchmark_stream, g_gpu_index);
+    
+    // Convert points to Montgomery form (required for performance - all operations use Montgomery)
+    int threadsPerBlock_conv = 256;
+    int blocks_conv = (n + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
+    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
+    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, g_benchmark_stream>>>(d_points, n);
+    check_cuda_error(cudaGetLastError());
+    
+    // Initialize result and scratch memory to zero (once, before benchmark loop)
+    cuda_memset_async(d_result, 0, sizeof(G1Point), g_benchmark_stream, g_gpu_index);
+    cuda_memset_async(d_scratch, 0, scratch_size, g_benchmark_stream, g_gpu_index);
+    
+    // Synchronize once before benchmark loop to ensure all setup is complete
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     
+    // Benchmark loop: only measure the MSM computation, no memory operations
     for (auto _ : state) {
         g1_msm_u64(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
         benchmark::ClobberMemory();
     }
     
+    // Synchronize once after benchmark loop to ensure all iterations complete
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     state.SetItemsProcessed(state.iterations() * n);
     state.SetBytesProcessed(state.iterations() * n * (sizeof(G1Point) + sizeof(uint64_t)));
@@ -198,11 +218,16 @@ static void BM_G2_MSM_U64(benchmark::State& state) {
     const int n = static_cast<int>(state.range(0));
     std::mt19937_64 rng(42);
     
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    int threadsPerBlock = 128;
+    int num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G2Point);
+    
     // Allocate device memory
     G2Point* d_points = (G2Point*)cuda_malloc_async(n * sizeof(G2Point), g_benchmark_stream, g_gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(n * sizeof(uint64_t), g_benchmark_stream, g_gpu_index);
     G2Point* d_result = (G2Point*)cuda_malloc_async(sizeof(G2Point), g_benchmark_stream, g_gpu_index);
-    G2Point* d_scratch = (G2Point*)cuda_malloc_async(n * sizeof(G2Point), g_benchmark_stream, g_gpu_index);
+    G2Point* d_scratch = (G2Point*)cuda_malloc_async(scratch_size, g_benchmark_stream, g_gpu_index);
     
     // Prepare host data
     G2Point* h_points = new G2Point[n];
@@ -217,13 +242,28 @@ static void BM_G2_MSM_U64(benchmark::State& state) {
     // Copy to device (once, before benchmark loop)
     cuda_memcpy_async_to_gpu(d_points, h_points, n * sizeof(G2Point), g_benchmark_stream, g_gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, h_scalars, n * sizeof(uint64_t), g_benchmark_stream, g_gpu_index);
+    
+    // Convert points to Montgomery form (required for performance - all operations use Montgomery)
+    int threadsPerBlock_conv = 256;
+    int blocks_conv = (n + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
+    extern __global__ void kernel_g2_to_montgomery_batch(G2Point* points, int n);
+    kernel_g2_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, g_benchmark_stream>>>(d_points, n);
+    check_cuda_error(cudaGetLastError());
+    
+    // Initialize result and scratch memory to zero (once, before benchmark loop)
+    cuda_memset_async(d_result, 0, sizeof(G2Point), g_benchmark_stream, g_gpu_index);
+    cuda_memset_async(d_scratch, 0, scratch_size, g_benchmark_stream, g_gpu_index);
+    
+    // Synchronize once before benchmark loop to ensure all setup is complete
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     
+    // Benchmark loop: only measure the MSM computation, no memory operations
     for (auto _ : state) {
         g2_msm_u64(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
         benchmark::ClobberMemory();
     }
     
+    // Synchronize once after benchmark loop to ensure all iterations complete
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     state.SetItemsProcessed(state.iterations() * n);
     state.SetBytesProcessed(state.iterations() * n * (sizeof(G2Point) + sizeof(uint64_t)));
@@ -246,11 +286,16 @@ static void BM_G1_MSM_Generator(benchmark::State& state) {
     // Get generator point
     const G1Point& G = g1_generator();
     
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    int threadsPerBlock = 256;
+    int num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1Point);
+    
     // Allocate device memory
     G1Point* d_points = (G1Point*)cuda_malloc_async(n * sizeof(G1Point), g_benchmark_stream, g_gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(n * sizeof(uint64_t), g_benchmark_stream, g_gpu_index);
     G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), g_benchmark_stream, g_gpu_index);
-    G1Point* d_scratch = (G1Point*)cuda_malloc_async(n * sizeof(G1Point), g_benchmark_stream, g_gpu_index);
+    G1Point* d_scratch = (G1Point*)cuda_malloc_async(scratch_size, g_benchmark_stream, g_gpu_index);
     
     // Prepare host data - all points are the generator
     G1Point* h_points = new G1Point[n];
@@ -267,13 +312,28 @@ static void BM_G1_MSM_Generator(benchmark::State& state) {
     // Copy to device (once, before benchmark loop)
     cuda_memcpy_async_to_gpu(d_points, h_points, n * sizeof(G1Point), g_benchmark_stream, g_gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, h_scalars, n * sizeof(uint64_t), g_benchmark_stream, g_gpu_index);
+    
+    // Convert points to Montgomery form (required for performance - all operations use Montgomery)
+    int threadsPerBlock_conv = 256;
+    int blocks_conv = (n + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
+    extern __global__ void kernel_g1_to_montgomery_batch(G1Point* points, int n);
+    kernel_g1_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, g_benchmark_stream>>>(d_points, n);
+    check_cuda_error(cudaGetLastError());
+    
+    // Initialize result and scratch memory to zero (once, before benchmark loop)
+    cuda_memset_async(d_result, 0, sizeof(G1Point), g_benchmark_stream, g_gpu_index);
+    cuda_memset_async(d_scratch, 0, scratch_size, g_benchmark_stream, g_gpu_index);
+    
+    // Synchronize once before benchmark loop to ensure all setup is complete
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     
+    // Benchmark loop: only measure the MSM computation, no memory operations
     for (auto _ : state) {
         g1_msm_u64(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
         benchmark::ClobberMemory();
     }
     
+    // Synchronize once after benchmark loop to ensure all iterations complete
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     state.SetItemsProcessed(state.iterations() * n);
     state.SetBytesProcessed(state.iterations() * n * (sizeof(G1Point) + sizeof(uint64_t)));
@@ -296,11 +356,16 @@ static void BM_G2_MSM_Generator(benchmark::State& state) {
     // Get generator point
     const G2Point& G = g2_generator();
     
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    int threadsPerBlock = 128;
+    int num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G2Point);
+    
     // Allocate device memory
     G2Point* d_points = (G2Point*)cuda_malloc_async(n * sizeof(G2Point), g_benchmark_stream, g_gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(n * sizeof(uint64_t), g_benchmark_stream, g_gpu_index);
     G2Point* d_result = (G2Point*)cuda_malloc_async(sizeof(G2Point), g_benchmark_stream, g_gpu_index);
-    G2Point* d_scratch = (G2Point*)cuda_malloc_async(n * sizeof(G2Point), g_benchmark_stream, g_gpu_index);
+    G2Point* d_scratch = (G2Point*)cuda_malloc_async(scratch_size, g_benchmark_stream, g_gpu_index);
     
     // Prepare host data - all points are the generator
     G2Point* h_points = new G2Point[n];
@@ -317,13 +382,28 @@ static void BM_G2_MSM_Generator(benchmark::State& state) {
     // Copy to device (once, before benchmark loop)
     cuda_memcpy_async_to_gpu(d_points, h_points, n * sizeof(G2Point), g_benchmark_stream, g_gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, h_scalars, n * sizeof(uint64_t), g_benchmark_stream, g_gpu_index);
+    
+    // Convert points to Montgomery form (required for performance - all operations use Montgomery)
+    int threadsPerBlock_conv = 256;
+    int blocks_conv = (n + threadsPerBlock_conv - 1) / threadsPerBlock_conv;
+    extern __global__ void kernel_g2_to_montgomery_batch(G2Point* points, int n);
+    kernel_g2_to_montgomery_batch<<<blocks_conv, threadsPerBlock_conv, 0, g_benchmark_stream>>>(d_points, n);
+    check_cuda_error(cudaGetLastError());
+    
+    // Initialize result and scratch memory to zero (once, before benchmark loop)
+    cuda_memset_async(d_result, 0, sizeof(G2Point), g_benchmark_stream, g_gpu_index);
+    cuda_memset_async(d_scratch, 0, scratch_size, g_benchmark_stream, g_gpu_index);
+    
+    // Synchronize once before benchmark loop to ensure all setup is complete
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     
+    // Benchmark loop: only measure the MSM computation, no memory operations
     for (auto _ : state) {
         g2_msm_u64(g_benchmark_stream, g_gpu_index, d_result, d_points, d_scalars, d_scratch, n);
         benchmark::ClobberMemory();
     }
     
+    // Synchronize once after benchmark loop to ensure all iterations complete
     cuda_synchronize_stream(g_benchmark_stream, g_gpu_index);
     state.SetItemsProcessed(state.iterations() * n);
     state.SetBytesProcessed(state.iterations() * n * (sizeof(G2Point) + sizeof(uint64_t)));
