@@ -35,6 +35,9 @@ set(CMAKE_CUDA_FLAGS_DEBUG "-g -O0 -G")
 # Additional CUDA flags
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -Wall -Xcompiler -Wextra")
 
+# DEBUG flag for debug tests
+option(DEBUG "Enable debug tests and verbose output" OFF)
+
 # Enable testing
 enable_testing()
 
@@ -127,6 +130,31 @@ set_target_properties(test_fp2 PROPERTIES
 # Register Fp2 tests with CTest
 gtest_discover_tests(test_fp2)
 
+# Test executable for MSM
+add_executable(test_msm tests/test_msm.cu)
+target_link_libraries(test_msm 
+    fp_arithmetic
+    GTest::gtest_main
+)
+
+# Set CUDA properties for MSM test executable
+set_target_properties(test_msm PROPERTIES
+    CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
+
+# Add DEBUG preprocessor definition if DEBUG is enabled
+if(DEBUG)
+    target_compile_definitions(test_msm PRIVATE DEBUG=1)
+    message(STATUS "DEBUG mode enabled: debug tests will be compiled")
+else()
+    message(STATUS "DEBUG mode disabled: debug tests will be skipped")
+endif()
+
+# Register MSM tests with CTest
+gtest_discover_tests(test_msm)
+
 # Benchmark executable for Fp
 add_executable(benchmark_fp benchmarks/benchmark_fp.cu)
 target_link_libraries(benchmark_fp 
@@ -170,3 +198,4 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "CUDA standard: ${CMAKE_CUDA_STANDARD}")
+message(STATUS "DEBUG flag: ${DEBUG}")

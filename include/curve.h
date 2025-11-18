@@ -62,3 +62,79 @@ __host__ __device__ bool g1_is_infinity(const G1Point& point);
 // Check if G2 point is at infinity
 __host__ __device__ bool g2_is_infinity(const G2Point& point);
 
+// Point operations for G1
+
+// Point addition: result = p1 + p2
+__host__ __device__ void g1_add(G1Point& result, const G1Point& p1, const G1Point& p2);
+
+// Point doubling: result = 2 * p
+__host__ __device__ void g1_double(G1Point& result, const G1Point& p);
+
+// Point negation: result = -p
+__host__ __device__ void g1_neg(G1Point& result, const G1Point& p);
+
+// Scalar multiplication: result = scalar * point
+// scalar is represented as little-endian limbs (uint64_t array)
+// scalar_limbs is the number of limbs (at most FP_LIMBS)
+__host__ __device__ void g1_scalar_mul(G1Point& result, const G1Point& point, const uint64_t* scalar, int scalar_limbs);
+
+// Scalar multiplication with 64-bit scalar: result = scalar * point
+__host__ __device__ void g1_scalar_mul_u64(G1Point& result, const G1Point& point, uint64_t scalar);
+
+// Point operations for G2
+
+// Point addition: result = p1 + p2
+__host__ __device__ void g2_add(G2Point& result, const G2Point& p1, const G2Point& p2);
+
+// Point doubling: result = 2 * p
+__host__ __device__ void g2_double(G2Point& result, const G2Point& p);
+
+// Point negation: result = -p
+__host__ __device__ void g2_neg(G2Point& result, const G2Point& p);
+
+// Scalar multiplication: result = scalar * point
+// scalar is represented as little-endian limbs (uint64_t array)
+// scalar_limbs is the number of limbs (at most FP_LIMBS)
+__host__ __device__ void g2_scalar_mul(G2Point& result, const G2Point& point, const uint64_t* scalar, int scalar_limbs);
+
+// Scalar multiplication with 64-bit scalar: result = scalar * point
+__host__ __device__ void g2_scalar_mul_u64(G2Point& result, const G2Point& point, uint64_t scalar);
+
+// Generator points (to be set from tfhe-rs)
+// These will be initialized by init_device_generators()
+extern __constant__ G1Point DEVICE_G1_GENERATOR;
+extern __constant__ G2Point DEVICE_G2_GENERATOR;
+
+// Initialize device generator points
+// Must be called once per device after init_device_curve()
+void init_device_generators(cudaStream_t stream, uint32_t gpu_index);
+
+// Get G1 generator point
+__host__ __device__ const G1Point& g1_generator();
+
+// Get G2 generator point
+__host__ __device__ const G2Point& g2_generator();
+
+// Multi-Scalar Multiplication (MSM)
+// Computes: result = sum(scalars[i] * points[i]) for i = 0 to n-1
+// Uses Pippenger's algorithm (bucket method) for efficiency
+
+// MSM for G1
+// stream: CUDA stream
+// gpu_index: GPU device index
+// result: output point (host memory)
+// points: array of G1 points (host memory, will be copied to device)
+// scalars: array of scalars, each as uint64_t array (host memory, will be copied to device)
+// scalar_limbs: number of limbs per scalar
+// n: number of points/scalars
+void g1_msm(cudaStream_t stream, uint32_t gpu_index, G1Point& result, const G1Point* points, const uint64_t* scalars, int scalar_limbs, int n);
+
+// MSM for G1 with 64-bit scalars (simpler interface)
+void g1_msm_u64(cudaStream_t stream, uint32_t gpu_index, G1Point& result, const G1Point* points, const uint64_t* scalars, int n);
+
+// MSM for G2
+void g2_msm(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Point* points, const uint64_t* scalars, int scalar_limbs, int n);
+
+// MSM for G2 with 64-bit scalars (simpler interface)
+void g2_msm_u64(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Point* points, const uint64_t* scalars, int n);
+
