@@ -49,15 +49,28 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+# Fetch Google Benchmark
+FetchContent_Declare(
+    benchmark
+    GIT_REPOSITORY https://github.com/google/benchmark.git
+    GIT_TAG v1.8.3
+)
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(benchmark)
+
 # Source files
 set(FP_SOURCES
     src/fp.cu
     src/fp_kernels.cu
+    src/fp2.cu
+    src/fp2_kernels.cu
 )
 
 set(FP_HEADERS
     include/fp.h
     include/fp_kernels.h
+    include/fp2.h
+    include/fp2_kernels.h
 )
 
 # Create library
@@ -90,6 +103,45 @@ set_target_properties(test_fp PROPERTIES
 # Register tests with CTest
 include(GoogleTest)
 gtest_discover_tests(test_fp)
+
+# Test executable for Fp2
+add_executable(test_fp2 tests/test_fp2.cu)
+target_link_libraries(test_fp2 
+    fp_arithmetic
+    GTest::gtest_main
+)
+
+# Set CUDA architecture for test executable
+set_target_properties(test_fp2 PROPERTIES
+    CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+)
+
+# Register Fp2 tests with CTest
+gtest_discover_tests(test_fp2)
+
+# Benchmark executable for Fp
+add_executable(benchmark_fp benchmarks/benchmark_fp.cu)
+target_link_libraries(benchmark_fp 
+    fp_arithmetic
+    benchmark::benchmark
+)
+
+# Set CUDA architecture for benchmark executable
+set_target_properties(benchmark_fp PROPERTIES
+    CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+)
+
+# Benchmark executable for Fp2
+add_executable(benchmark_fp2 benchmarks/benchmark_fp2.cu)
+target_link_libraries(benchmark_fp2 
+    fp_arithmetic
+    benchmark::benchmark
+)
+
+# Set CUDA architecture for benchmark executable
+set_target_properties(benchmark_fp2 PROPERTIES
+    CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+)
 
 # Installation (optional)
 install(TARGETS fp_arithmetic

@@ -100,3 +100,7 @@ __host__ __device__ void fp_neg(Fp& c, const Fp& a);
 // Conditional assignment: if condition, dst = src, else dst unchanged
 __host__ __device__ void fp_cmov(Fp& dst, const Fp& src, uint64_t condition);
 
+// Helper functions to access constants
+// Get modulus reference (device: from constant memory, host: static copy)
+__host__ __device__ const Fp& fp_modulus();
+
