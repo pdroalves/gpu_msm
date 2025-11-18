@@ -146,3 +146,59 @@ __host__ __device__ void fp_cmov(Fp& dst, const Fp& src, uint64_t condition);
 // Get modulus reference (device: from constant memory, host: static copy)
 __host__ __device__ const Fp& fp_modulus();
 
+// ============================================================================
+// Async/Sync API for device memory operations
+// ============================================================================
+// All pointers in these functions point to device memory (already allocated)
+// _async versions: Launch kernels asynchronously, return immediately (no sync)
+// Default versions (no suffix): Call _async then synchronize stream
+// ============================================================================
+
+// Addition: d_c = d_a + d_b mod p (all device pointers)
+void fp_add_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+void fp_add(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+
+// Subtraction: d_c = d_a - d_b mod p (all device pointers)
+void fp_sub_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+void fp_sub(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+
+// Multiplication: d_c = d_a * d_b mod p (all device pointers)
+void fp_mul_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+void fp_mul(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+
+// Negation: d_c = -d_a mod p (all device pointers)
+void fp_neg_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a);
+void fp_neg(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a);
+
+// Inversion: d_c = d_a^(-1) mod p (all device pointers)
+void fp_inv_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a);
+void fp_inv(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a);
+
+// Division: d_c = d_a / d_b mod p (all device pointers)
+void fp_div_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+void fp_div(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+
+// Copy: d_dst = d_src (all device pointers)
+void fp_copy_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_dst, const Fp* d_src);
+void fp_copy(cudaStream_t stream, uint32_t gpu_index, Fp* d_dst, const Fp* d_src);
+
+// Set to zero: d_a = 0 (device pointer)
+void fp_zero_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_a);
+void fp_zero(cudaStream_t stream, uint32_t gpu_index, Fp* d_a);
+
+// Set to one: d_a = 1 (device pointer, normal form)
+void fp_one_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_a);
+void fp_one(cudaStream_t stream, uint32_t gpu_index, Fp* d_a);
+
+// Convert to Montgomery form: d_c = (d_a * R) mod p (all device pointers)
+void fp_to_montgomery_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a);
+void fp_to_montgomery(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a);
+
+// Convert from Montgomery form: d_c = (d_a * R_INV) mod p (all device pointers)
+void fp_from_montgomery_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a);
+void fp_from_montgomery(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a);
+
+// Montgomery multiplication: d_c = (d_a * d_b * R_INV) mod p (all device pointers)
+void fp_mont_mul_async(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+void fp_mont_mul(cudaStream_t stream, uint32_t gpu_index, Fp* d_c, const Fp* d_a, const Fp* d_b);
+

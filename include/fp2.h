@@ -78,3 +78,47 @@ __host__ __device__ void fp2_mul_by_i(Fp2& c, const Fp2& a);
 // This is the same as mul_by_i
 __host__ __device__ void fp2_mul_by_non_residue(Fp2& c, const Fp2& a);
 
+// ============================================================================
+// Async/Sync API for device memory operations
+// ============================================================================
+// All pointers in these functions point to device memory (already allocated)
+// _async versions: Launch kernels asynchronously, return immediately (no sync)
+//  versions: Call _async then synchronize stream
+// ============================================================================
+
+// Addition: d_c = d_a + d_b (all device pointers)
+void fp2_add_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b);
+void fp2_add(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b);
+
+// Subtraction: d_c = d_a - d_b (all device pointers)
+void fp2_sub_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b);
+void fp2_sub(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b);
+
+// Multiplication: d_c = d_a * d_b (all device pointers)
+void fp2_mul_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b);
+void fp2_mul(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b);
+
+// Squaring: d_c = d_a^2 (all device pointers)
+void fp2_square_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a);
+void fp2_square(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a);
+
+// Negation: d_c = -d_a (all device pointers)
+void fp2_neg_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a);
+void fp2_neg(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a);
+
+// Conjugation: d_c = d_a.conjugate() = d_a0 - d_a1*i (all device pointers)
+void fp2_conjugate_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a);
+void fp2_conjugate(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a);
+
+// Inversion: d_c = d_a^(-1) (all device pointers)
+void fp2_inv_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a);
+void fp2_inv(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a);
+
+// Division: d_c = d_a / d_b (all device pointers)
+void fp2_div_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b);
+void fp2_div(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b);
+
+// Copy: d_dst = d_src (all device pointers)
+void fp2_copy_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_dst, const Fp2* d_src);
+void fp2_copy(cudaStream_t stream, uint32_t gpu_index, Fp2* d_dst, const Fp2* d_src);
+

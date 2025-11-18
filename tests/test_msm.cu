@@ -142,7 +142,14 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
         GTEST_SKIP() << "G1 generator not set - please provide generator points from tfhe-rs";
     }
     
-    // Create array of N points, all equal to generator G
+    // Allocate device memory for points and scalars
+    G1Point* d_points = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
+    uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
+    G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_scratch = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
+    G1Point* d_expected = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    
+    // Prepare host data
     G1Point* h_points = (G1Point*)malloc(N * sizeof(G1Point));
     for (uint64_t i = 0; i < N; i++) {
         fp_copy(h_points[i].x, G.x);
@@ -150,20 +157,33 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
         h_points[i].infinity = G.infinity;
     }
     
-    // Create scalar array: [1, 2, 3, ..., N]
     uint64_t* h_scalars = (uint64_t*)malloc(N * sizeof(uint64_t));
     for (uint64_t i = 0; i < N; i++) {
         h_scalars[i] = i + 1;
     }
     
-    // Compute MSM (function handles device memory internally)
-    G1Point msm_result;
-    g1_msm_u64(stream, gpu_index, msm_result, h_points, h_scalars, N);
+    // Copy to device
+    cuda_memcpy_async_to_gpu(d_points, h_points, N * sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_scalars, h_scalars, N * sizeof(uint64_t), stream, gpu_index);
     
-    // Compute expected result: G * (N * (N+1) / 2)
+    // Copy generator to device for expected result computation
+    G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
+    
+    // Compute MSM on device
+    g1_msm_u64(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    
+    // Compute expected result on device: G * (N * (N+1) / 2)
     uint64_t expected_scalar = triangular_number(N);
+    g1_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
+    
+    // Synchronize and copy results back
+    cuda_synchronize_stream(stream, gpu_index);
+    G1Point msm_result;
     G1Point expected_result;
-    g1_scalar_mul_u64(expected_result, G, expected_scalar);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&expected_result, d_expected, sizeof(G1Point), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
     
     // Compare results
     EXPECT_EQ(msm_result.infinity, expected_result.infinity);
@@ -177,6 +197,12 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
     // Cleanup
     free(h_points);
     free(h_scalars);
+    cuda_drop_async(d_points, stream, gpu_index);
+    cuda_drop_async(d_scalars, stream, gpu_index);
+    cuda_drop_async(d_result, stream, gpu_index);
+    cuda_drop_async(d_scratch, stream, gpu_index);
+    cuda_drop_async(d_expected, stream, gpu_index);
+    cuda_drop_async(d_G, stream, gpu_index);
 }
 
 #ifdef DEBUG
@@ -196,7 +222,14 @@ TEST_F(MSMTest, G1MSMWithGeneratorBasicTest) {
     
     std::cout << "\n=== G1MSMWithGeneratorBasicTest (N=" << N << ") ===" << std::endl;
     
-    // Create array of N points, all equal to generator G
+    // Allocate device memory
+    G1Point* d_points = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
+    uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
+    G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_expected = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    
+    // Prepare host data
     G1Point* h_points = (G1Point*)malloc(N * sizeof(G1Point));
     for (uint64_t i = 0; i < N; i++) {
         fp_copy(h_points[i].x, G.x);
@@ -204,13 +237,12 @@ TEST_F(MSMTest, G1MSMWithGeneratorBasicTest) {
         h_points[i].infinity = G.infinity;
     }
     
-    // Create scalar array: [1, 2, 3, ..., N]
     uint64_t* h_scalars = (uint64_t*)malloc(N * sizeof(uint64_t));
     for (uint64_t i = 0; i < N; i++) {
         h_scalars[i] = i + 1;
     }
     
-    // Print base array (points)
+    // Print base array (points) - before copying to device
     std::cout << "\nBase array (points):" << std::endl;
     for (uint64_t i = 0; i < N; i++) {
         std::cout << "  Point[" << i << "]:" << std::endl;
@@ -223,18 +255,29 @@ TEST_F(MSMTest, G1MSMWithGeneratorBasicTest) {
         std::cout << "  Scalar[" << i << "] = " << h_scalars[i] << std::endl;
     }
     
-    // Compute MSM (function handles device memory internally)
+    // Copy to device
+    cuda_memcpy_async_to_gpu(d_points, h_points, N * sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_scalars, h_scalars, N * sizeof(uint64_t), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
+    
+    // Compute MSM on device
+    g1_msm_u64(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    
+    // Compute expected result on device: G * (N * (N+1) / 2)
+    uint64_t expected_scalar = triangular_number(N);
+    g1_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
+    
+    // Synchronize and copy results back
+    cuda_synchronize_stream(stream, gpu_index);
     G1Point msm_result;
-    g1_msm_u64(stream, gpu_index, msm_result, h_points, h_scalars, N);
+    G1Point expected_result;
+    cuda_memcpy_async_to_cpu(&msm_result, d_result, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&expected_result, d_expected, sizeof(G1Point), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
     
     // Print result
     std::cout << "\nMSM Result:" << std::endl;
     print_g1_point("  ", msm_result);
-    
-    // Compute expected result: G * (N * (N+1) / 2)
-    uint64_t expected_scalar = triangular_number(N);
-    G1Point expected_result;
-    g1_scalar_mul_u64(expected_result, G, expected_scalar);
     
     std::cout << "\nExpected Result (G * " << expected_scalar << "):" << std::endl;
     print_g1_point("  ", expected_result);
@@ -253,6 +296,12 @@ TEST_F(MSMTest, G1MSMWithGeneratorBasicTest) {
     // Cleanup
     free(h_points);
     free(h_scalars);
+    cuda_drop_async(d_points, stream, gpu_index);
+    cuda_drop_async(d_scalars, stream, gpu_index);
+    cuda_drop_async(d_result, stream, gpu_index);
+    cuda_drop_async(d_scratch, stream, gpu_index);
+    cuda_drop_async(d_expected, stream, gpu_index);
+    cuda_drop_async(d_G, stream, gpu_index);
 }
 #endif // DEBUG
 
@@ -268,7 +317,15 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
         GTEST_SKIP() << "G2 generator not set - please provide generator points from tfhe-rs";
     }
     
-    // Create array of N points, all equal to generator G
+    // Allocate device memory
+    G2Point* d_points = (G2Point*)cuda_malloc_async(N * sizeof(G2Point), stream, gpu_index);
+    uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
+    G2Point* d_result = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
+    G2Point* d_scratch = (G2Point*)cuda_malloc_async(N * sizeof(G2Point), stream, gpu_index);
+    G2Point* d_expected = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
+    G2Point* d_G = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
+    
+    // Prepare host data
     G2Point* h_points = (G2Point*)malloc(N * sizeof(G2Point));
     for (uint64_t i = 0; i < N; i++) {
         fp2_copy(h_points[i].x, G.x);
@@ -276,20 +333,30 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
         h_points[i].infinity = G.infinity;
     }
     
-    // Create scalar array: [1, 2, 3, ..., N]
     uint64_t* h_scalars = (uint64_t*)malloc(N * sizeof(uint64_t));
     for (uint64_t i = 0; i < N; i++) {
         h_scalars[i] = i + 1;
     }
     
-    // Compute MSM (function handles device memory internally)
-    G2Point msm_result;
-    g2_msm_u64(stream, gpu_index, msm_result, h_points, h_scalars, N);
+    // Copy to device
+    cuda_memcpy_async_to_gpu(d_points, h_points, N * sizeof(G2Point), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_scalars, h_scalars, N * sizeof(uint64_t), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G2Point), stream, gpu_index);
     
-    // Compute expected result: G * (N * (N+1) / 2)
+    // Compute MSM on device
+    g2_msm_u64(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    
+    // Compute expected result on device: G * (N * (N+1) / 2)
     uint64_t expected_scalar = triangular_number(N);
+    g2_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
+    
+    // Synchronize and copy results back
+    cuda_synchronize_stream(stream, gpu_index);
+    G2Point msm_result;
     G2Point expected_result;
-    g2_scalar_mul_u64(expected_result, G, expected_scalar);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result, sizeof(G2Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&expected_result, d_expected, sizeof(G2Point), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
     
     // Compare results
     EXPECT_EQ(msm_result.infinity, expected_result.infinity);
@@ -303,6 +370,12 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
     // Cleanup
     free(h_points);
     free(h_scalars);
+    cuda_drop_async(d_points, stream, gpu_index);
+    cuda_drop_async(d_scalars, stream, gpu_index);
+    cuda_drop_async(d_result, stream, gpu_index);
+    cuda_drop_async(d_scratch, stream, gpu_index);
+    cuda_drop_async(d_expected, stream, gpu_index);
+    cuda_drop_async(d_G, stream, gpu_index);
 }
 
 // Test with larger N to verify correctness
@@ -314,6 +387,15 @@ TEST_F(MSMTest, G1MSMLargeN) {
         GTEST_SKIP() << "G1 generator not set";
     }
     
+    // Allocate device memory
+    G1Point* d_points = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
+    uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
+    G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_scratch = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
+    G1Point* d_expected = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    
+    // Prepare host data
     G1Point* h_points = (G1Point*)malloc(N * sizeof(G1Point));
     for (uint64_t i = 0; i < N; i++) {
         fp_copy(h_points[i].x, G.x);
@@ -326,12 +408,25 @@ TEST_F(MSMTest, G1MSMLargeN) {
         h_scalars[i] = i + 1;
     }
     
-    G1Point msm_result;
-    g1_msm_u64(stream, gpu_index, msm_result, h_points, h_scalars, N);
+    // Copy to device
+    cuda_memcpy_async_to_gpu(d_points, h_points, N * sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_scalars, h_scalars, N * sizeof(uint64_t), stream, gpu_index);
+    cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
     
+    // Compute MSM on device
+    g1_msm_u64(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    
+    // Compute expected result on device
     uint64_t expected_scalar = triangular_number(N);
+    g1_scalar_mul_u64(stream, gpu_index, d_expected, d_G, expected_scalar);
+    
+    // Synchronize and copy results back
+    cuda_synchronize_stream(stream, gpu_index);
+    G1Point msm_result;
     G1Point expected_result;
-    g1_scalar_mul_u64(expected_result, G, expected_scalar);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&expected_result, d_expected, sizeof(G1Point), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
     
     EXPECT_EQ(msm_result.infinity, expected_result.infinity);
     if (!msm_result.infinity && !expected_result.infinity) {
@@ -341,5 +436,11 @@ TEST_F(MSMTest, G1MSMLargeN) {
     
     free(h_points);
     free(h_scalars);
+    cuda_drop_async(d_points, stream, gpu_index);
+    cuda_drop_async(d_scalars, stream, gpu_index);
+    cuda_drop_async(d_result, stream, gpu_index);
+    cuda_drop_async(d_scratch, stream, gpu_index);
+    cuda_drop_async(d_expected, stream, gpu_index);
+    cuda_drop_async(d_G, stream, gpu_index);
 }
 

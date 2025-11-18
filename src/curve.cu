@@ -848,3 +848,325 @@ void g2_msm(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Po
     cuda_drop_async(d_sum, stream, gpu_index);
 }
 
+// ============================================================================
+// Kernels for async/sync API (work on device pointers)
+// ============================================================================
+
+// G1 kernels
+__global__ void kernel_g1_add(G1Point* result, const G1Point* p1, const G1Point* p2) {
+    g1_add(*result, *p1, *p2);
+}
+
+__global__ void kernel_g1_double(G1Point* result, const G1Point* p) {
+    g1_double(*result, *p);
+}
+
+__global__ void kernel_g1_neg(G1Point* result, const G1Point* p) {
+    g1_neg(*result, *p);
+}
+
+__global__ void kernel_g1_point_at_infinity(G1Point* result) {
+    g1_point_at_infinity(*result);
+}
+
+__global__ void kernel_g1_scalar_mul_u64(G1Point* result, const G1Point* point, uint64_t scalar) {
+    g1_scalar_mul_u64(*result, *point, scalar);
+}
+
+__global__ void kernel_g1_scalar_mul(G1Point* result, const G1Point* point, const uint64_t* scalar, int scalar_limbs) {
+    g1_scalar_mul(*result, *point, scalar, scalar_limbs);
+}
+
+// G2 kernels
+__global__ void kernel_g2_add(G2Point* result, const G2Point* p1, const G2Point* p2) {
+    g2_add(*result, *p1, *p2);
+}
+
+__global__ void kernel_g2_double(G2Point* result, const G2Point* p) {
+    g2_double(*result, *p);
+}
+
+__global__ void kernel_g2_neg(G2Point* result, const G2Point* p) {
+    g2_neg(*result, *p);
+}
+
+__global__ void kernel_g2_point_at_infinity(G2Point* result) {
+    g2_point_at_infinity(*result);
+}
+
+__global__ void kernel_g2_scalar_mul_u64(G2Point* result, const G2Point* point, uint64_t scalar) {
+    g2_scalar_mul_u64(*result, *point, scalar);
+}
+
+__global__ void kernel_g2_scalar_mul(G2Point* result, const G2Point* point, const uint64_t* scalar, int scalar_limbs) {
+    g2_scalar_mul(*result, *point, scalar, scalar_limbs);
+}
+
+// ============================================================================
+// Async/Sync API implementations for G1
+// ============================================================================
+
+void g1_add_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p1, const G1Point* d_p2) {
+    PANIC_IF_FALSE(d_result != nullptr && d_p1 != nullptr && d_p2 != nullptr, "g1_add_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g1_add<<<1, 1, 0, stream>>>(d_result, d_p1, d_p2);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_add(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p1, const G1Point* d_p2) {
+    g1_add_async(stream, gpu_index, d_result, d_p1, d_p2);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g1_double_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p) {
+    PANIC_IF_FALSE(d_result != nullptr && d_p != nullptr, "g1_double_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g1_double<<<1, 1, 0, stream>>>(d_result, d_p);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_double(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p) {
+    g1_double_async(stream, gpu_index, d_result, d_p);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g1_neg_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p) {
+    PANIC_IF_FALSE(d_result != nullptr && d_p != nullptr, "g1_neg_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g1_neg<<<1, 1, 0, stream>>>(d_result, d_p);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_neg(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p) {
+    g1_neg_async(stream, gpu_index, d_result, d_p);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g1_point_at_infinity_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result) {
+    PANIC_IF_FALSE(d_result != nullptr, "g1_point_at_infinity_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g1_point_at_infinity<<<1, 1, 0, stream>>>(d_result);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_point_at_infinity(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result) {
+    g1_point_at_infinity_async(stream, gpu_index, d_result);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g1_scalar_mul_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point, uint64_t scalar) {
+    PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr, "g1_scalar_mul_u64_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g1_scalar_mul_u64<<<1, 1, 0, stream>>>(d_result, d_point, scalar);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_scalar_mul_u64(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point, uint64_t scalar) {
+    g1_scalar_mul_u64_async(stream, gpu_index, d_result, d_point, scalar);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g1_scalar_mul_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point, const uint64_t* d_scalar, int scalar_limbs) {
+    PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr && d_scalar != nullptr, "g1_scalar_mul_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g1_scalar_mul<<<1, 1, 0, stream>>>(d_result, d_point, d_scalar, scalar_limbs);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_scalar_mul(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point, const uint64_t* d_scalar, int scalar_limbs) {
+    g1_scalar_mul_async(stream, gpu_index, d_result, d_point, d_scalar, scalar_limbs);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// ============================================================================
+// Async/Sync API implementations for G2
+// ============================================================================
+
+void g2_add_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p1, const G2Point* d_p2) {
+    PANIC_IF_FALSE(d_result != nullptr && d_p1 != nullptr && d_p2 != nullptr, "g2_add_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g2_add<<<1, 1, 0, stream>>>(d_result, d_p1, d_p2);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_add(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p1, const G2Point* d_p2) {
+    g2_add_async(stream, gpu_index, d_result, d_p1, d_p2);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g2_double_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p) {
+    PANIC_IF_FALSE(d_result != nullptr && d_p != nullptr, "g2_double_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g2_double<<<1, 1, 0, stream>>>(d_result, d_p);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_double(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p) {
+    g2_double_async(stream, gpu_index, d_result, d_p);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g2_neg_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p) {
+    PANIC_IF_FALSE(d_result != nullptr && d_p != nullptr, "g2_neg_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g2_neg<<<1, 1, 0, stream>>>(d_result, d_p);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_neg(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p) {
+    g2_neg_async(stream, gpu_index, d_result, d_p);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g2_point_at_infinity_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result) {
+    PANIC_IF_FALSE(d_result != nullptr, "g2_point_at_infinity_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g2_point_at_infinity<<<1, 1, 0, stream>>>(d_result);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_point_at_infinity(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result) {
+    g2_point_at_infinity_async(stream, gpu_index, d_result);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g2_scalar_mul_u64_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, uint64_t scalar) {
+    PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr, "g2_scalar_mul_u64_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g2_scalar_mul_u64<<<1, 1, 0, stream>>>(d_result, d_point, scalar);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_scalar_mul_u64(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, uint64_t scalar) {
+    g2_scalar_mul_u64_async(stream, gpu_index, d_result, d_point, scalar);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+void g2_scalar_mul_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, const uint64_t* d_scalar, int scalar_limbs) {
+    PANIC_IF_FALSE(d_result != nullptr && d_point != nullptr && d_scalar != nullptr, "g2_scalar_mul_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_g2_scalar_mul<<<1, 1, 0, stream>>>(d_result, d_point, d_scalar, scalar_limbs);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_scalar_mul(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, const uint64_t* d_scalar, int scalar_limbs) {
+    g2_scalar_mul_async(stream, gpu_index, d_result, d_point, d_scalar, scalar_limbs);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// ============================================================================
+// Refactored MSM API (device pointers only, no allocations/copies/frees)
+// ============================================================================
+
+// G1 MSM with 64-bit scalars - async version
+void g1_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1Point* d_scratch, int n) {
+    if (n == 0) {
+        g1_point_at_infinity_async(stream, gpu_index, d_result);
+        return;
+    }
+    
+    PANIC_IF_FALSE(n > 0, "g1_msm_u64_async: invalid size n=%d", n);
+    PANIC_IF_FALSE(d_result != nullptr && d_points != nullptr && d_scalars != nullptr && d_scratch != nullptr, "g1_msm_u64_async: null pointer argument");
+    
+    cuda_set_device(gpu_index);
+    
+    // Launch kernel to compute scalar[i] * points[i] for each i
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
+    kernel_g1_scalar_mul_u64_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, n);
+    check_cuda_error(cudaGetLastError());
+    
+    // Reduce sum directly into result (uses async g1_add internally)
+    kernel_g1_reduce_sum<<<1, 1, 0, stream>>>(d_result, d_scratch, n);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_msm_u64(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1Point* d_scratch, int n) {
+    g1_msm_u64_async(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, n);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// G1 MSM with multi-limb scalars - async version
+void g1_msm_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G1Point* d_scratch, int n) {
+    if (n == 0) {
+        g1_point_at_infinity_async(stream, gpu_index, d_result);
+        return;
+    }
+    
+    PANIC_IF_FALSE(n > 0, "g1_msm_async: invalid size n=%d", n);
+    PANIC_IF_FALSE(d_result != nullptr && d_points != nullptr && d_scalars != nullptr && d_scratch != nullptr, "g1_msm_async: null pointer argument");
+    
+    cuda_set_device(gpu_index);
+    
+    // Launch kernel to compute scalar[i] * points[i] for each i
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
+    kernel_g1_scalar_mul_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, scalar_limbs, n);
+    check_cuda_error(cudaGetLastError());
+    
+    // Reduce sum directly into result
+    kernel_g1_reduce_sum<<<1, 1, 0, stream>>>(d_result, d_scratch, n);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g1_msm(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G1Point* d_scratch, int n) {
+    g1_msm_async(stream, gpu_index, d_result, d_points, d_scalars, scalar_limbs, d_scratch, n);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// G2 MSM with 64-bit scalars - async version
+void g2_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, G2Point* d_scratch, int n) {
+    if (n == 0) {
+        g2_point_at_infinity_async(stream, gpu_index, d_result);
+        return;
+    }
+    
+    PANIC_IF_FALSE(n > 0, "g2_msm_u64_async: invalid size n=%d", n);
+    PANIC_IF_FALSE(d_result != nullptr && d_points != nullptr && d_scalars != nullptr && d_scratch != nullptr, "g2_msm_u64_async: null pointer argument");
+    
+    cuda_set_device(gpu_index);
+    
+    // Launch kernel to compute scalar[i] * points[i] for each i
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
+    kernel_g2_scalar_mul_u64_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, n);
+    check_cuda_error(cudaGetLastError());
+    
+    // Reduce sum directly into result
+    kernel_g2_reduce_sum<<<1, 1, 0, stream>>>(d_result, d_scratch, n);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_msm_u64(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, G2Point* d_scratch, int n) {
+    g2_msm_u64_async(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, n);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// G2 MSM with multi-limb scalars - async version
+void g2_msm_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G2Point* d_scratch, int n) {
+    if (n == 0) {
+        g2_point_at_infinity_async(stream, gpu_index, d_result);
+        return;
+    }
+    
+    PANIC_IF_FALSE(n > 0, "g2_msm_async: invalid size n=%d", n);
+    PANIC_IF_FALSE(d_result != nullptr && d_points != nullptr && d_scalars != nullptr && d_scratch != nullptr, "g2_msm_async: null pointer argument");
+    
+    cuda_set_device(gpu_index);
+    
+    // Launch kernel to compute scalar[i] * points[i] for each i
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (n + threadsPerBlock - 1) / threadsPerBlock;
+    kernel_g2_scalar_mul_array<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_scratch, d_points, d_scalars, scalar_limbs, n);
+    check_cuda_error(cudaGetLastError());
+    
+    // Reduce sum directly into result
+    kernel_g2_reduce_sum<<<1, 1, 0, stream>>>(d_result, d_scratch, n);
+    check_cuda_error(cudaGetLastError());
+}
+
+void g2_msm(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G2Point* d_scratch, int n) {
+    g2_msm_async(stream, gpu_index, d_result, d_points, d_scalars, scalar_limbs, d_scratch, n);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+

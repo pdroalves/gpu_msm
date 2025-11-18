@@ -183,6 +183,20 @@ set_target_properties(benchmark_fp2 PROPERTIES
     CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
+# Benchmark executable for MSM
+add_executable(benchmark_msm benchmarks/benchmark_msm.cu)
+target_link_libraries(benchmark_msm 
+    fp_arithmetic
+    benchmark::benchmark
+)
+
+# Set CUDA properties for MSM benchmark executable
+set_target_properties(benchmark_msm PROPERTIES
+    CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
+
 # Installation (optional)
 install(TARGETS fp_arithmetic
     ARCHIVE DESTINATION lib

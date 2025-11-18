@@ -138,3 +138,87 @@ void g2_msm(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Po
 // MSM for G2 with 64-bit scalars (simpler interface)
 void g2_msm_u64(cudaStream_t stream, uint32_t gpu_index, G2Point& result, const G2Point* points, const uint64_t* scalars, int n);
 
+// ============================================================================
+// Async/Sync API for curve operations
+// ============================================================================
+// All pointers point to device memory (already allocated)
+// _async versions: Launch kernels asynchronously, return immediately (no sync)
+//  versions: Call _async then synchronize stream
+// ============================================================================
+
+// G1 Point operations (all device pointers)
+
+// Point addition: d_result = d_p1 + d_p2
+void g1_add_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p1, const G1Point* d_p2);
+void g1_add(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p1, const G1Point* d_p2);
+
+// Point doubling: d_result = 2 * d_p
+void g1_double_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p);
+void g1_double(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p);
+
+// Point negation: d_result = -d_p
+void g1_neg_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p);
+void g1_neg(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_p);
+
+// Scalar multiplication: d_result = scalar * d_point (64-bit scalar)
+void g1_scalar_mul_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point, uint64_t scalar);
+void g1_scalar_mul_u64(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point, uint64_t scalar);
+
+// Scalar multiplication: d_result = scalar * d_point (multi-limb scalar, device pointer)
+void g1_scalar_mul_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point, const uint64_t* d_scalar, int scalar_limbs);
+void g1_scalar_mul(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_point, const uint64_t* d_scalar, int scalar_limbs);
+
+// Point at infinity: d_result = O (identity element)
+void g1_point_at_infinity_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result);
+void g1_point_at_infinity(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result);
+
+// G2 Point operations (all device pointers)
+
+// Point addition: d_result = d_p1 + d_p2
+void g2_add_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p1, const G2Point* d_p2);
+void g2_add(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p1, const G2Point* d_p2);
+
+// Point doubling: d_result = 2 * d_p
+void g2_double_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p);
+void g2_double(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p);
+
+// Point negation: d_result = -d_p
+void g2_neg_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p);
+void g2_neg(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_p);
+
+// Scalar multiplication: d_result = scalar * d_point (64-bit scalar)
+void g2_scalar_mul_u64_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, uint64_t scalar);
+void g2_scalar_mul_u64(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, uint64_t scalar);
+
+// Scalar multiplication: d_result = scalar * d_point (multi-limb scalar, device pointer)
+void g2_scalar_mul_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, const uint64_t* d_scalar, int scalar_limbs);
+void g2_scalar_mul(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_point, const uint64_t* d_scalar, int scalar_limbs);
+
+// Point at infinity: d_result = O (identity element)
+void g2_point_at_infinity_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result);
+void g2_point_at_infinity(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result);
+
+// ============================================================================
+// Refactored MSM API (device pointers only, no allocations/copies/frees)
+// ============================================================================
+// All pointers are device pointers (already allocated by caller)
+// Temporary buffer must be provided by caller:
+//   - d_scratch: buffer of size n * sizeof(G1Point/G2Point) for intermediate results
+// Uses async operations internally
+
+// MSM for G1 with 64-bit scalars
+void g1_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1Point* d_scratch, int n);
+void g1_msm_u64(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1Point* d_scratch, int n);
+
+// MSM for G1 with multi-limb scalars
+void g1_msm_async(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G1Point* d_scratch, int n);
+void g1_msm(cudaStream_t stream, uint32_t gpu_index, G1Point* d_result, const G1Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G1Point* d_scratch, int n);
+
+// MSM for G2 with 64-bit scalars
+void g2_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, G2Point* d_scratch, int n);
+void g2_msm_u64(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, G2Point* d_scratch, int n);
+
+// MSM for G2 with multi-limb scalars
+void g2_msm_async(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G2Point* d_scratch, int n);
+void g2_msm(cudaStream_t stream, uint32_t gpu_index, G2Point* d_result, const G2Point* d_points, const uint64_t* d_scalars, int scalar_limbs, G2Point* d_scratch, int n);
+

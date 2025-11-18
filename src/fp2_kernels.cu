@@ -554,3 +554,125 @@ void fp2_cmov_gpu(Fp2* result, const Fp2* src, uint64_t condition) {
     if (d_src != nullptr) cuda_drop(d_src, gpu_index);
     if (d_condition != nullptr) cuda_drop(d_condition, gpu_index);
 }
+
+// ============================================================================
+// Async/Sync API implementations
+// All pointers are device pointers (already allocated)
+// ============================================================================
+
+// Addition: d_c = d_a + d_b
+void fp2_add_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b) {
+    PANIC_IF_FALSE(d_c != nullptr && d_a != nullptr && d_b != nullptr, "fp2_add_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_add<<<1, 1, 0, stream>>>(d_c, d_a, d_b);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_add(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b) {
+    fp2_add_async(stream, gpu_index, d_c, d_a, d_b);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// Subtraction: d_c = d_a - d_b
+void fp2_sub_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b) {
+    PANIC_IF_FALSE(d_c != nullptr && d_a != nullptr && d_b != nullptr, "fp2_sub_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_sub<<<1, 1, 0, stream>>>(d_c, d_a, d_b);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_sub(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b) {
+    fp2_sub_async(stream, gpu_index, d_c, d_a, d_b);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// Multiplication: d_c = d_a * d_b
+void fp2_mul_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b) {
+    PANIC_IF_FALSE(d_c != nullptr && d_a != nullptr && d_b != nullptr, "fp2_mul_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_mul<<<1, 1, 0, stream>>>(d_c, d_a, d_b);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_mul(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b) {
+    fp2_mul_async(stream, gpu_index, d_c, d_a, d_b);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// Squaring: d_c = d_a^2
+void fp2_square_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a) {
+    PANIC_IF_FALSE(d_c != nullptr && d_a != nullptr, "fp2_square_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_square<<<1, 1, 0, stream>>>(d_c, d_a);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_square(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a) {
+    fp2_square_async(stream, gpu_index, d_c, d_a);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// Negation: d_c = -d_a
+void fp2_neg_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a) {
+    PANIC_IF_FALSE(d_c != nullptr && d_a != nullptr, "fp2_neg_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_neg<<<1, 1, 0, stream>>>(d_c, d_a);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_neg(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a) {
+    fp2_neg_async(stream, gpu_index, d_c, d_a);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// Conjugation: d_c = d_a.conjugate()
+void fp2_conjugate_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a) {
+    PANIC_IF_FALSE(d_c != nullptr && d_a != nullptr, "fp2_conjugate_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_conjugate<<<1, 1, 0, stream>>>(d_c, d_a);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_conjugate(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a) {
+    fp2_conjugate_async(stream, gpu_index, d_c, d_a);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// Inversion: d_c = d_a^(-1)
+void fp2_inv_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a) {
+    PANIC_IF_FALSE(d_c != nullptr && d_a != nullptr, "fp2_inv_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_inv<<<1, 1, 0, stream>>>(d_c, d_a);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_inv(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a) {
+    fp2_inv_async(stream, gpu_index, d_c, d_a);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// Division: d_c = d_a / d_b
+void fp2_div_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b) {
+    PANIC_IF_FALSE(d_c != nullptr && d_a != nullptr && d_b != nullptr, "fp2_div_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_div<<<1, 1, 0, stream>>>(d_c, d_a, d_b);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_div(cudaStream_t stream, uint32_t gpu_index, Fp2* d_c, const Fp2* d_a, const Fp2* d_b) {
+    fp2_div_async(stream, gpu_index, d_c, d_a, d_b);
+    cuda_synchronize_stream(stream, gpu_index);
+}
+
+// Copy: d_dst = d_src
+void fp2_copy_async(cudaStream_t stream, uint32_t gpu_index, Fp2* d_dst, const Fp2* d_src) {
+    PANIC_IF_FALSE(d_dst != nullptr && d_src != nullptr, "fp2_copy_async: null pointer argument");
+    cuda_set_device(gpu_index);
+    kernel_test_fp2_copy<<<1, 1, 0, stream>>>(d_dst, d_src);
+    check_cuda_error(cudaGetLastError());
+}
+
+void fp2_copy(cudaStream_t stream, uint32_t gpu_index, Fp2* d_dst, const Fp2* d_src) {
+    fp2_copy_async(stream, gpu_index, d_dst, d_src);
+    cuda_synchronize_stream(stream, gpu_index);
+}
