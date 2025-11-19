@@ -27,10 +27,12 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Compiler flags
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
-set(CMAKE_CUDA_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-g -O0")
+set(CMAKE_CUDA_FLAGS_RELEASE "-g -O0 --generate-line-info")
+#set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+#set(CMAKE_CUDA_FLAGS_RELEASE "-O3 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
-set(CMAKE_CUDA_FLAGS_DEBUG "-g -O0 -G")
+set(CMAKE_CUDA_FLAGS_DEBUG "-g -O0 --generate-line-info")
 
 # Additional CUDA flags
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -Wall -Xcompiler -Wextra")
@@ -143,8 +145,20 @@ target_link_libraries(test_msm
     GTest::gtest_main
 )
 
+add_executable(test_msm_debug tests/test_msm_debug.cu)
+target_link_libraries(test_msm_debug 
+    fp_arithmetic
+    GTest::gtest_main
+)
+
 # Set CUDA properties for MSM test executable
 set_target_properties(test_msm PROPERTIES
+    CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
+
+set_target_properties(test_msm_debug PROPERTIES
     CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES}
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON

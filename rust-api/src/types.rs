@@ -84,11 +84,10 @@ impl fmt::Display for G1Affine {
         if self.is_infinity() {
             write!(f, "Infinity")
         } else {
-            // Convert from Montgomery to normal form
-            let normal = crate::conversions::g1_affine_from_montgomery(self);
-            
-            let x_str = fp_to_decimal_string(&normal.inner().x.limb);
-            let y_str = fp_to_decimal_string(&normal.inner().y.limb);
+            // Display whatever form the point is in (standard or Montgomery)
+            // No conversion - just print the raw values as decimal
+            let x_str = fp_to_decimal_string(&self.inner.x.limb);
+            let y_str = fp_to_decimal_string(&self.inner.y.limb);
             
             write!(f, "({}, {})", x_str, y_str)
         }
@@ -245,11 +244,10 @@ impl fmt::Display for G2Affine {
         if self.is_infinity() {
             write!(f, "Infinity")
         } else {
-            // Convert from Montgomery to normal form
-            let normal = crate::conversions::g2_affine_from_montgomery(self);
-            
-            let (x_c0, x_c1) = normal.x();
-            let (y_c0, y_c1) = normal.y();
+            // Display whatever form the point is in (standard or Montgomery)
+            // No conversion - just print the raw values as decimal
+            let (x_c0, x_c1) = self.x();
+            let (y_c0, y_c1) = self.y();
             
             let x_c0_str = fp_to_decimal_string(&x_c0);
             let x_c1_str = fp_to_decimal_string(&x_c1);
@@ -345,6 +343,7 @@ impl G1Projective {
     /// Compute multi-scalar multiplication: result = sum(scalars[i] * points[i])
     /// Returns an error if MSM computation fails
     pub fn msm(points: &[G1Affine], scalars: &[u64], gpu_index: u32) -> Result<Self, String> {
+        println!("msm inside points #0: {:?}", points);
         if points.len() != scalars.len() {
             return Err(format!("Points and scalars must have the same length: {} != {}", points.len(), scalars.len()));
         }
@@ -358,7 +357,7 @@ impl G1Projective {
             Y: Fp { limb: [0; 7] },
             Z: Fp { limb: [0; 7] },
         };
-        println!("points: {:?}", points);
+        println!("msm inside points #1: {:?}", points);
         let ret = unsafe {
             crate::ffi::g1_msm_wrapper(
                 &mut result,

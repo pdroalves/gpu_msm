@@ -63,15 +63,18 @@ fn fp_to_fq(limbs: [u64; 7]) -> Fq {
 fn fq_to_fp(fq: &Fq) -> [u64; 7] {
     // Extract limbs from Fq's internal representation
     // In arkworks, Fq has a `into_bigint()` method that gives us the limbs
-    // IMPORTANT: arkworks stores field elements in Montgomery form internally!
-    // The into_bigint() method returns the Montgomery representation
+    // IMPORTANT: arkworks stores field elements in Montgomery form internally
+    // The into_bigint() method returns the Montgomery representation (not standard form)
+    // This means the limbs we extract are already in Montgomery form
     use ark_ff::PrimeField;
     let bigint = fq.into_bigint();
     let mut limbs = [0u64; 7];
     for (i, limb) in bigint.as_ref().iter().take(7).enumerate() {
         limbs[i] = *limb;
     }
-    // Note: These limbs are in Montgomery form, matching our internal representation
+    // Note: These limbs are in MONTGOMERY form (arkworks' internal representation)
+    // Points are stored in Montgomery form, matching arkworks' internal representation
+    // The MSM wrapper should NOT convert them again (they're already in Montgomery form)
     limbs
 }
 
@@ -141,10 +144,14 @@ impl FromTfheZkPokG1Affine for G1Affine {
         let x_fq = &other.x;
         let y_fq = &other.y;
         
-        let x = fq_to_fp(x_fq);
-        let y = fq_to_fp(y_fq);
+        // fq_to_fp extracts limbs from into_bigint(), which returns Montgomery form
+        // So the points are stored in Montgomery form (matching arkworks' internal representation)
+        let x_limbs = fq_to_fp(x_fq);
+        let y_limbs = fq_to_fp(y_fq);
         
-        G1Affine::new(x, y, false)
+        // Points are stored in MONTGOMERY form (from arkworks' into_bigint())
+        // The MSM wrapper should NOT convert them again (they're already in Montgomery form)
+        G1Affine::new(x_limbs, y_limbs, false)
     }
 }
 

@@ -8,32 +8,46 @@ fn main() {
     let project_root = manifest_dir.parent().unwrap();
     let build_dir = project_root.join("build");
     
-    // Check if c_wrapper.cu is newer than libfp_arithmetic.a
+    // Check if any CMake source files are newer than libfp_arithmetic.a
     // If so, we need to rebuild the CMake project
-    let c_wrapper = manifest_dir.join("src").join("c_wrapper.cu");
     let lib_file = build_dir.join("libfp_arithmetic.a");
     
-    let needs_rebuild = if c_wrapper.exists() && lib_file.exists() {
-        let c_wrapper_meta = std::fs::metadata(&c_wrapper).ok();
+    // List of all source files that CMake compiles (from CMakeLists.txt)
+    let cmake_sources = [
+        project_root.join("src").join("device.cu"),
+        project_root.join("src").join("fp.cu"),
+        project_root.join("src").join("fp_kernels.cu"),
+        project_root.join("src").join("fp2.cu"),
+        project_root.join("src").join("fp2_kernels.cu"),
+        project_root.join("src").join("curve.cu"),
+        manifest_dir.join("src").join("c_wrapper.cu"),
+    ];
+    
+    let needs_rebuild = if lib_file.exists() {
         let lib_meta = std::fs::metadata(&lib_file).ok();
+        let lib_time = lib_meta.and_then(|m| m.modified().ok());
         
-        match (c_wrapper_meta, lib_meta) {
-            (Some(cw_meta), Some(lib_meta)) => {
-                if let (Ok(cw_time), Ok(lib_time)) = (cw_meta.modified(), lib_meta.modified()) {
-                    cw_time > lib_time
-                } else {
-                    false
-                }
+        // Check if any source file is newer than the library
+        cmake_sources.iter().any(|source| {
+            if !source.exists() {
+                return false;
             }
-            _ => false,
-        }
+            let source_meta = std::fs::metadata(source).ok();
+            let source_time = source_meta.and_then(|m| m.modified().ok());
+            
+            match (source_time, lib_time) {
+                (Some(st), Some(lt)) => st > lt,
+                _ => false,
+            }
+        })
     } else {
-        false
+        // If library doesn't exist, we need to build it
+        true
     };
     
-    // If c_wrapper.cu is newer, trigger CMake rebuild
+    // If any source file is newer, trigger CMake rebuild
     if needs_rebuild {
-        println!("cargo:warning=c_wrapper.cu is newer than libfp_arithmetic.a, rebuilding CMake project...");
+        println!("cargo:warning=CMake source files are newer than libfp_arithmetic.a, rebuilding CMake project...");
         // First ensure CMake is configured
         if !build_dir.join("CMakeCache.txt").exists() {
             println!("cargo:warning=CMake not configured, running cmake...");
@@ -108,8 +122,12 @@ fn main() {
     // Rebuild if the C++ library changes
     println!("cargo:rerun-if-changed={}", build_dir.join("libfp_arithmetic.a").display());
     
-    // Rebuild if C wrapper changes
-    println!("cargo:rerun-if-changed={}", manifest_dir.join("src").join("c_wrapper.cu").display());
+    // Rebuild if any CMake source files change
+    for source in &cmake_sources {
+        if source.exists() {
+            println!("cargo:rerun-if-changed={}", source.display());
+        }
+    }
     
     // Compile CUDA stub file to provide weak implementations of device registration symbols
     let cuda_stubs = manifest_dir.join("src").join("cuda_stubs.c");

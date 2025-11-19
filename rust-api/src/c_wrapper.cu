@@ -88,11 +88,17 @@ int g1_msm_wrapper(
     cuda_synchronize_stream(stream, gpu_index);
     
     // Calculate scratch size: (num_blocks + 1) * MSM_BUCKET_COUNT
-    // Match the C++ test which uses 256 for scratch calculation (even though MSM uses 128 internally)
-    // Using a larger value ensures we have enough scratch space
-    const auto threadsPerBlock = 256;  // Match C++ test (test_msm.cu line 149)
-    const auto num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+    // IMPORTANT: Must match the num_blocks calculation used in point_msm_u64_async_g1
+    // MSM function uses threadsPerBlock = 128, so we must use the same for num_blocks calculation
+    const auto threadsPerBlock_msm = 128;  // Match MSM function (point_msm_u64_async_g1 uses 128)
+    const auto num_blocks = (n + threadsPerBlock_msm - 1) / threadsPerBlock_msm;
     const auto scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint);
+    
+    // Debug: Verify buffer size calculation
+    printf("DEBUG wrapper: n=%d, num_blocks=%d, scratch_size=%zu bytes\n", n, num_blocks, scratch_size);
+    
+    // Ensure device is set before allocation
+    cuda_set_device(gpu_index);
     
     // Allocate device memory
     auto* d_points = static_cast<G1Point*>(cuda_malloc_async(n * sizeof(G1Point), stream, gpu_index));
@@ -108,54 +114,31 @@ int g1_msm_wrapper(
     // Zero-initialize result (like C++ test does, even though MSM initializes it internally)
     cuda_memset_async(d_result, 0, sizeof(G1ProjectivePoint), stream, gpu_index);
     
-    // Convert points to Montgomery form on HOST (device-side conversion doesn't work)
-    // This matches what the C++ test would do if it did host-side conversion
-    auto* h_points_mont = static_cast<G1Point*>(malloc(n * sizeof(G1Point)));
-    for (auto i = 0; i < n; i++) {
-        h_points_mont[i].infinity = points[i].infinity;
-        if (!points[i].infinity) {
-            fp_to_montgomery(h_points_mont[i].x, points[i].x);
-            fp_to_montgomery(h_points_mont[i].y, points[i].y);
-        } else {
-            fp_zero(h_points_mont[i].x);
-            fp_zero(h_points_mont[i].y);
-        }
-
-        // Print point data
-        printf("Point %d: infinity=%d\n on standard form", i, points[i].infinity);
-        printf("X: [");
-        for (auto j = 0; j < 7; j++) {
-            printf("%lu%s", points[i].x.limb[j], j < 6 ? ", " : "]\n");
-        }
-        printf("Y: [");
-        for (auto j = 0; j < 7; j++) {
-            printf("%lu%s", points[i].y.limb[j], j < 6 ? ", " : "]\n");
-        }
-
-        // Print point data
-        printf("Point %d: infinity=%d\n on montgomery form", i, h_points_mont[i].infinity);
-        printf("X: [");
-        for (auto j = 0; j < 7; j++) {
-            printf("%lu%s", h_points_mont[i].x.limb[j], j < 6 ? ", " : "]\n");
-        }
-        printf("Y: [");
-        for (auto j = 0; j < 7; j++) {
-            printf("%lu%s", h_points_mont[i].y.limb[j], j < 6 ? ", " : "]\n");
-        }
-    }
-
-    // Copy Montgomery-form points and scalars to device
-    cuda_memcpy_async_to_gpu(d_points, h_points_mont, n * sizeof(G1Point), stream, gpu_index);
+    // Copy points and scalars to device (points are in standard form from arkworks)
+    cuda_memcpy_async_to_gpu(d_points, points, n * sizeof(G1Point), stream, gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, scalars, n * sizeof(uint64_t), stream, gpu_index);
-    free(h_points_mont);
     
-    // Synchronize before MSM
-    // Ensure all stream operations are complete before MSM
-    // (MSM function uses cudaDeviceSynchronize internally, but we want to ensure our stream is ready)
+    // CRITICAL: Synchronize to ensure copy completes before conversion
     cuda_synchronize_stream(stream, gpu_index);
-    check_cuda_error(cudaDeviceSynchronize());
     
-    // Run MSM
+    // CRITICAL: Convert points to Montgomery form (required for MSM)
+    // MSM expects points in Montgomery form, just like the C++ test does
+    // Use the synchronous version which handles synchronization internally
+    point_to_montgomery_batch<G1Point>(stream, gpu_index, d_points, n);
+    auto conv_err = cudaGetLastError();
+    if (conv_err != cudaSuccess) {
+        printf("ERROR: point_to_montgomery_batch failed: %s\n", cudaGetErrorString(conv_err));
+        cuda_drop_async(d_points, stream, gpu_index);
+        cuda_drop_async(d_scalars, stream, gpu_index);
+        cuda_drop_async(d_result, stream, gpu_index);
+        cuda_drop_async(d_scratch, stream, gpu_index);
+        cuda_destroy_stream(stream, gpu_index);
+        return -4;
+    }
+    
+    
+    // Run MSM (matches C++ test pattern exactly)
+    // point_msm_u64_g1 internally synchronizes the stream, so no need to sync here
     point_msm_u64_g1(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, n);
     
     // Check for CUDA errors after MSM
@@ -207,14 +190,20 @@ int g2_msm_wrapper(
     }
     
     // Initialize device
+    cuda_set_device(gpu_index);
     // Initialize device generators (converts from standard to Montgomery form)
     init_device_generators(stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
     
     // Calculate scratch size
-    // Use 256 threads per block to match the test
-    const auto threadsPerBlock = 256;  // Match test_msm.cu
-    const auto num_blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+    // IMPORTANT: Must match the num_blocks calculation used in point_msm_u64_async_g2
+    // MSM function uses threadsPerBlock = 64 for G2, so we must use the same for num_blocks calculation
+    const auto threadsPerBlock_msm = 64;  // Match MSM function (point_msm_u64_async_g2 uses 64)
+    const auto num_blocks = (n + threadsPerBlock_msm - 1) / threadsPerBlock_msm;
     const auto scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G2ProjectivePoint);
+    
+    // Debug: Verify buffer size calculation
+    printf("DEBUG wrapper G2: n=%d, num_blocks=%d, scratch_size=%zu bytes\n", n, num_blocks, scratch_size);
     
     // Allocate device memory
     auto* d_points = static_cast<G2Point*>(cuda_malloc_async(n * sizeof(G2Point), stream, gpu_index));
@@ -231,21 +220,8 @@ int g2_msm_wrapper(
     cuda_memcpy_async_to_gpu(d_points, points, n * sizeof(G2Point), stream, gpu_index);
     cuda_memcpy_async_to_gpu(d_scalars, scalars, n * sizeof(uint64_t), stream, gpu_index);
     
-    // Convert points to Montgomery form (required for MSM performance)
-    // Points from tfhe-zk-pok are in normal form, but MSM expects Montgomery form
-    point_to_montgomery_batch<G2Point>(stream, gpu_index, d_points, n);
-    auto conv_err = cudaGetLastError();
-    if (conv_err != cudaSuccess) {
-        cuda_drop_async(d_points, stream, gpu_index);
-        cuda_drop_async(d_scalars, stream, gpu_index);
-        cuda_drop_async(d_result, stream, gpu_index);
-        cuda_drop_async(d_scratch, stream, gpu_index);
-        cuda_destroy_stream(stream, gpu_index);
-        return -5; // Conversion error
-    }
-    
-    // Synchronize after conversion (like the test does)
-    cuda_synchronize_stream(stream, gpu_index);
+    // Points are already in Montgomery form (from arkworks' into_bigint())
+    // No need to convert - they're already in the correct form for MSM
     
     // Note: MSM function initializes result to infinity internally
     // Run MSM

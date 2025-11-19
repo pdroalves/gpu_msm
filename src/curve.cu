@@ -402,7 +402,14 @@ __host__ __device__ void affine_to_projective(G1ProjectivePoint& proj, const G1P
         // Affine coordinates are already in Montgomery form (converted before MSM)
         fp_copy(proj.X, affine.x);
         fp_copy(proj.Y, affine.y);
-        fp_one_montgomery(proj.Z);  // Z = 1 in Montgomery form
+        // Z = 1 in Montgomery form = R mod p
+        // R mod p in Montgomery form = (R mod p) * R mod p = R^2 mod p
+        // So we can directly use R^2 (which is already R^2 mod p in normal form)
+        // and convert it to Montgomery form, which gives R^2 * R mod p = R^3 mod p (wrong!)
+        // Actually, the correct way: R mod p (normal) * R mod p = R^2 mod p
+        // So R mod p in Montgomery = R^2 mod p? No, that's not right either.
+        // Let me use fp_one_montgomery which should compute it correctly
+        fp_one_montgomery(proj.Z);  // Z = 1 in Montgomery form = R mod p
     }
 }
 
@@ -921,8 +928,11 @@ __global__ void kernel_clear_buckets(
     int num_buckets
 ) {
     using Traits = PointTraits<PointType>;
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < num_buckets) {
+    // Use a loop to ensure ALL buckets are written, even if threadsPerBlock < num_buckets
+    int total_threads = blockDim.x * gridDim.x;
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    for (int idx = thread_id; idx < num_buckets; idx += total_threads) {
         Traits::point_at_infinity(buckets[idx]);
     }
 }
@@ -938,36 +948,45 @@ __global__ void kernel_reduce_buckets(
 ) {
     using Traits = PointTraits<PointType>;
     
-    // Each thread handles one bucket across all blocks
-    int bucket_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (bucket_idx == 0 || bucket_idx >= num_buckets) return;
+    // Each thread handles one or more buckets across all blocks
+    // Use a loop to ensure all buckets are written, even if threadsPerBlock < num_buckets
+    int total_threads = blockDim.x * gridDim.x;
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
     
-    PointType bucket_sum;
-    Traits::point_at_infinity(bucket_sum);
-    
-    // Sum contributions from all blocks for this bucket
-    for (int block = 0; block < num_blocks; block++) {
-        int idx = block * num_buckets + bucket_idx;
-        const PointType& block_contrib = block_buckets[idx];
-        if (!Traits::is_infinity(block_contrib)) {
-            if (Traits::is_infinity(bucket_sum)) {
-                Traits::field_copy(bucket_sum.x, block_contrib.x);
-                Traits::field_copy(bucket_sum.y, block_contrib.y);
-                bucket_sum.infinity = block_contrib.infinity;
-            } else {
-                PointType temp;
-                point_add(temp, bucket_sum, block_contrib);
-                Traits::field_copy(bucket_sum.x, temp.x);
-                Traits::field_copy(bucket_sum.y, temp.y);
-                bucket_sum.infinity = temp.infinity;
+    // Process buckets assigned to this thread
+    for (int bucket_idx = thread_id; bucket_idx < num_buckets; bucket_idx += total_threads) {
+        PointType bucket_sum;
+        Traits::point_at_infinity(bucket_sum);
+        
+        // Sum contributions from all blocks for this bucket
+        // Bucket 0 is never used in MSM (scalars extract windows with bucket_idx > 0),
+        // but we still need to initialize it to avoid uninitialized memory errors
+        if (bucket_idx > 0) {
+            for (int block = 0; block < num_blocks; block++) {
+                int idx = block * num_buckets + bucket_idx;
+                const PointType& block_contrib = block_buckets[idx];
+                if (!Traits::is_infinity(block_contrib)) {
+                    if (Traits::is_infinity(bucket_sum)) {
+                        Traits::field_copy(bucket_sum.x, block_contrib.x);
+                        Traits::field_copy(bucket_sum.y, block_contrib.y);
+                        bucket_sum.infinity = block_contrib.infinity;
+                    } else {
+                        PointType temp;
+                        point_add(temp, bucket_sum, block_contrib);
+                        Traits::field_copy(bucket_sum.x, temp.x);
+                        Traits::field_copy(bucket_sum.y, temp.y);
+                        bucket_sum.infinity = temp.infinity;
+                    }
+                }
             }
         }
+        // For bucket_idx == 0: bucket_sum is already at infinity (initialized above)
+        
+        // Write final result (ensures all buckets are written, including bucket 0)
+        Traits::field_copy(final_buckets[bucket_idx].x, bucket_sum.x);
+        Traits::field_copy(final_buckets[bucket_idx].y, bucket_sum.y);
+        final_buckets[bucket_idx].infinity = bucket_sum.infinity;
     }
-    
-    // Write final result
-    Traits::field_copy(final_buckets[bucket_idx].x, bucket_sum.x);
-    Traits::field_copy(final_buckets[bucket_idx].y, bucket_sum.y);
-    final_buckets[bucket_idx].infinity = bucket_sum.infinity;
 }
 
 // Pippenger kernel: Accumulate points into buckets for a specific window (64-bit scalars)
@@ -1144,8 +1163,9 @@ __global__ void kernel_accumulate_buckets_u64(
     __syncthreads();
     
     // Phase 3: Write block's bucket contributions to global memory
-    if (threadIdx.x < MSM_BUCKET_COUNT) {
-        int bucket_idx = threadIdx.x;
+    // Ensure all MSM_BUCKET_COUNT buckets are written, even if threadsPerBlock > MSM_BUCKET_COUNT
+    // Use a loop to handle the case where threadsPerBlock < MSM_BUCKET_COUNT
+    for (int bucket_idx = threadIdx.x; bucket_idx < MSM_BUCKET_COUNT; bucket_idx += blockDim.x) {
         int block_bucket_idx = blockIdx.x * MSM_BUCKET_COUNT + bucket_idx;
         const PointType& bucket = shared_buckets[bucket_idx];
         Traits::field_copy(block_buckets[block_bucket_idx].x, bucket.x);
@@ -1187,6 +1207,17 @@ __global__ void kernel_accumulate_buckets_u64_projective_g1(
         // Convert affine to projective
         affine_to_projective(thread_points[threadIdx.x], points[point_idx]);
         thread_buckets[threadIdx.x] = bucket_idx;
+        
+        // Debug: print bucket index and Z value for first point
+        if (point_idx == 0 && threadIdx.x == 0) {
+            printf("DEBUG kernel_accumulate: point_idx=%d, scalar=%llu, window_idx=%d, bucket_idx=%d, Z=(%llu,%llu,%llu,%llu,%llu,%llu,%llu), Z_is_zero=%d\n",
+                   point_idx, scalars[point_idx], window_idx, bucket_idx,
+                   thread_points[threadIdx.x].Z.limb[0], thread_points[threadIdx.x].Z.limb[1],
+                   thread_points[threadIdx.x].Z.limb[2], thread_points[threadIdx.x].Z.limb[3],
+                   thread_points[threadIdx.x].Z.limb[4], thread_points[threadIdx.x].Z.limb[5],
+                   thread_points[threadIdx.x].Z.limb[6],
+                   fp_is_zero(thread_points[threadIdx.x].Z) ? 1 : 0);
+        }
     } else {
         // Point at infinity in projective form (Z = 0)
         g1_projective_point_at_infinity(thread_points[threadIdx.x]);
@@ -1217,6 +1248,16 @@ __global__ void kernel_accumulate_buckets_u64_projective_g1(
     const G1ProjectivePoint& my_point = thread_points[threadIdx.x];
     bool my_valid = (point_idx < n) && (my_bucket > 0) && (my_bucket < MSM_BUCKET_COUNT) && !fp_is_zero(my_point.Z);
     
+    // Debug: print validity check for first point
+    if (point_idx == 0 && threadIdx.x == 0) {
+        printf("DEBUG kernel_accumulate: my_bucket=%d, my_valid=%d (point_idx<n=%d, bucket>0=%d, bucket<COUNT=%d, Z_not_zero=%d)\n",
+               my_bucket, my_valid ? 1 : 0,
+               (point_idx < n) ? 1 : 0,
+               (my_bucket > 0) ? 1 : 0,
+               (my_bucket < MSM_BUCKET_COUNT) ? 1 : 0,
+               !fp_is_zero(my_point.Z) ? 1 : 0);
+    }
+    
     if (my_valid) {
         // Find first lane with this bucket in warp
         unsigned int mask = 0;
@@ -1226,9 +1267,15 @@ __global__ void kernel_accumulate_buckets_u64_projective_g1(
                 mask |= (1U << i);
             }
         }
-        unsigned int first = __ffs(mask) - 1;
+        unsigned int first = (mask == 0) ? 0xFFFFFFFF : (__ffs(mask) - 1);
         
-        if (lane_id == first) {
+        // Debug: print mask and first for first point
+        if (point_idx == 0 && threadIdx.x == 0) {
+            printf("DEBUG kernel_accumulate: mask=0x%x, first=%u, lane_id=%d, lane_id==first=%d\n",
+                   mask, first, lane_id, (lane_id == first) ? 1 : 0);
+        }
+        
+        if (lane_id == first && mask != 0) {
             // I accumulate all points with this bucket in my warp using projective addition
             G1ProjectivePoint sum = my_point;
             
@@ -1312,8 +1359,9 @@ __global__ void kernel_accumulate_buckets_u64_projective_g1(
     __syncthreads();
     
     // Phase 3: Write block's bucket contributions to global memory (projective points)
-    if (threadIdx.x < MSM_BUCKET_COUNT) {
-        int bucket_idx = threadIdx.x;
+    // Ensure all MSM_BUCKET_COUNT buckets are written, even if threadsPerBlock > MSM_BUCKET_COUNT
+    // Use a loop to handle the case where threadsPerBlock < MSM_BUCKET_COUNT
+    for (int bucket_idx = threadIdx.x; bucket_idx < MSM_BUCKET_COUNT; bucket_idx += blockDim.x) {
         int block_bucket_idx = blockIdx.x * MSM_BUCKET_COUNT + bucket_idx;
         const G1ProjectivePoint& bucket = shared_buckets[bucket_idx];
         fp_copy(block_buckets[block_bucket_idx].X, bucket.X);
@@ -1457,8 +1505,10 @@ __global__ void kernel_accumulate_buckets_u64_projective_g2(
     
     __syncthreads();
     
-    if (threadIdx.x < MSM_BUCKET_COUNT) {
-        int bucket_idx = threadIdx.x;
+    // Phase 3: Write block's bucket contributions to global memory (projective points)
+    // Ensure all MSM_BUCKET_COUNT buckets are written, even if threadsPerBlock > MSM_BUCKET_COUNT
+    // Use a loop to handle the case where threadsPerBlock < MSM_BUCKET_COUNT
+    for (int bucket_idx = threadIdx.x; bucket_idx < MSM_BUCKET_COUNT; bucket_idx += blockDim.x) {
         int block_bucket_idx = blockIdx.x * MSM_BUCKET_COUNT + bucket_idx;
         const G2ProjectivePoint& bucket = shared_buckets[bucket_idx];
         fp2_copy(block_buckets[block_bucket_idx].X, bucket.X);
@@ -1474,15 +1524,31 @@ __global__ void kernel_accumulate_buckets_u64_projective_g2(
 
 // Helper function to clear projective buckets
 __global__ void kernel_clear_buckets_projective_g1(G1ProjectivePoint* buckets, int num_buckets) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < num_buckets) {
-        g1_projective_point_at_infinity(buckets[idx]);
+    // Use a loop to ensure ALL buckets are written, even if threadsPerBlock < num_buckets
+    int total_threads = blockDim.x * gridDim.x;
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    for (int idx = thread_id; idx < num_buckets; idx += total_threads) {
+        // Explicitly zero all fields to ensure complete initialization
+        fp_zero(buckets[idx].X);
+        fp_zero(buckets[idx].Y);
+        fp_zero(buckets[idx].Z);
+        
+        // Debug: verify bucket 0 is written
+        if (idx == 0 && thread_id == 0) {
+            printf("DEBUG clear: thread_id=%d, idx=%d, wrote bucket 0, X.limb[0]=%llu\n", 
+                   thread_id, idx, buckets[idx].X.limb[0]);
+        }
     }
+    __syncthreads();  // Ensure all writes complete before kernel exits
 }
 
 __global__ void kernel_clear_buckets_projective_g2(G2ProjectivePoint* buckets, int num_buckets) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < num_buckets) {
+    // Use a loop to ensure ALL buckets are written, even if threadsPerBlock < num_buckets
+    int total_threads = blockDim.x * gridDim.x;
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    for (int idx = thread_id; idx < num_buckets; idx += total_threads) {
         g2_projective_point_at_infinity(buckets[idx]);
     }
 }
@@ -1494,30 +1560,54 @@ __global__ void kernel_reduce_buckets_projective_g1(
     int num_blocks,
     int num_buckets
 ) {
-    int bucket_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (bucket_idx == 0 || bucket_idx >= num_buckets) return;
+    // Use a loop to ensure ALL buckets are written, even if threadsPerBlock < num_buckets
+    int total_threads = blockDim.x * gridDim.x;
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
     
-    G1ProjectivePoint bucket_sum;
-    g1_projective_point_at_infinity(bucket_sum);
-    
-    for (int block = 0; block < num_blocks; block++) {
-        int idx = block * num_buckets + bucket_idx;
-        if (!fp_is_zero(block_buckets[idx].Z)) {
-            if (fp_is_zero(bucket_sum.Z)) {
-                fp_copy(bucket_sum.X, block_buckets[idx].X);
-                fp_copy(bucket_sum.Y, block_buckets[idx].Y);
-                fp_copy(bucket_sum.Z, block_buckets[idx].Z);
-            } else {
-                G1ProjectivePoint temp;
-                projective_point_add(temp, bucket_sum, block_buckets[idx]);
-                bucket_sum = temp;
+    // Process buckets assigned to this thread
+    for (int bucket_idx = thread_id; bucket_idx < num_buckets; bucket_idx += total_threads) {
+        G1ProjectivePoint bucket_sum;
+        g1_projective_point_at_infinity(bucket_sum);
+        
+        // Sum contributions from all blocks for this bucket
+        // Bucket 0 is never used in MSM (scalars extract windows with bucket_idx > 0),
+        // but we still need to initialize it to avoid uninitialized memory errors
+        if (bucket_idx > 0) {
+            for (int block = 0; block < num_blocks; block++) {
+                int idx = block * num_buckets + bucket_idx;
+                if (!fp_is_zero(block_buckets[idx].Z)) {
+                    if (fp_is_zero(bucket_sum.Z)) {
+                        fp_copy(bucket_sum.X, block_buckets[idx].X);
+                        fp_copy(bucket_sum.Y, block_buckets[idx].Y);
+                        fp_copy(bucket_sum.Z, block_buckets[idx].Z);
+                    } else {
+                        G1ProjectivePoint temp;
+                        projective_point_add(temp, bucket_sum, block_buckets[idx]);
+                        bucket_sum = temp;
+                    }
+                }
             }
         }
+        // For bucket_idx == 0: bucket_sum is already at infinity (initialized above)
+        
+        // Write final result (ensures all buckets are written, including bucket 0)
+        // Use explicit limb-by-limb copy to ensure all memory is written
+        for (int i = 0; i < FP_LIMBS; i++) {
+            final_buckets[bucket_idx].X.limb[i] = bucket_sum.X.limb[i];
+            final_buckets[bucket_idx].Y.limb[i] = bucket_sum.Y.limb[i];
+            final_buckets[bucket_idx].Z.limb[i] = bucket_sum.Z.limb[i];
+        }
+        
+        // Debug: verify bucket 0 is written
+        if (bucket_idx == 0 && thread_id == 0) {
+            printf("DEBUG reduce: thread_id=%d, bucket_idx=%d, wrote bucket 0, X.limb[0]=%llu, Y.limb[0]=%llu, Z.limb[0]=%llu\n",
+                   thread_id, bucket_idx,
+                   final_buckets[bucket_idx].X.limb[0],
+                   final_buckets[bucket_idx].Y.limb[0],
+                   final_buckets[bucket_idx].Z.limb[0]);
+        }
     }
-    
-    fp_copy(final_buckets[bucket_idx].X, bucket_sum.X);
-    fp_copy(final_buckets[bucket_idx].Y, bucket_sum.Y);
-    fp_copy(final_buckets[bucket_idx].Z, bucket_sum.Z);
+    __syncthreads();  // Ensure all writes complete before kernel exits
 }
 
 __global__ void kernel_reduce_buckets_projective_g2(
@@ -1526,30 +1616,41 @@ __global__ void kernel_reduce_buckets_projective_g2(
     int num_blocks,
     int num_buckets
 ) {
-    int bucket_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (bucket_idx == 0 || bucket_idx >= num_buckets) return;
+    // Use a loop to ensure ALL buckets are written, even if threadsPerBlock < num_buckets
+    int total_threads = blockDim.x * gridDim.x;
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
     
-    G2ProjectivePoint bucket_sum;
-    g2_projective_point_at_infinity(bucket_sum);
-    
-    for (int block = 0; block < num_blocks; block++) {
-        int idx = block * num_buckets + bucket_idx;
-        if (!fp2_is_zero(block_buckets[idx].Z)) {
-            if (fp2_is_zero(bucket_sum.Z)) {
-                fp2_copy(bucket_sum.X, block_buckets[idx].X);
-                fp2_copy(bucket_sum.Y, block_buckets[idx].Y);
-                fp2_copy(bucket_sum.Z, block_buckets[idx].Z);
-            } else {
-                G2ProjectivePoint temp;
-                projective_point_add(temp, bucket_sum, block_buckets[idx]);
-                bucket_sum = temp;
+    // Process buckets assigned to this thread
+    for (int bucket_idx = thread_id; bucket_idx < num_buckets; bucket_idx += total_threads) {
+        G2ProjectivePoint bucket_sum;
+        g2_projective_point_at_infinity(bucket_sum);
+        
+        // Sum contributions from all blocks for this bucket
+        // Bucket 0 is never used in MSM (scalars extract windows with bucket_idx > 0),
+        // but we still need to initialize it to avoid uninitialized memory errors
+        if (bucket_idx > 0) {
+            for (int block = 0; block < num_blocks; block++) {
+                int idx = block * num_buckets + bucket_idx;
+                if (!fp2_is_zero(block_buckets[idx].Z)) {
+                    if (fp2_is_zero(bucket_sum.Z)) {
+                        fp2_copy(bucket_sum.X, block_buckets[idx].X);
+                        fp2_copy(bucket_sum.Y, block_buckets[idx].Y);
+                        fp2_copy(bucket_sum.Z, block_buckets[idx].Z);
+                    } else {
+                        G2ProjectivePoint temp;
+                        projective_point_add(temp, bucket_sum, block_buckets[idx]);
+                        bucket_sum = temp;
+                    }
+                }
             }
         }
+        // For bucket_idx == 0: bucket_sum is already at infinity (initialized above)
+        
+        // Write final result (ensures all buckets are written, including bucket 0)
+        fp2_copy(final_buckets[bucket_idx].X, bucket_sum.X);
+        fp2_copy(final_buckets[bucket_idx].Y, bucket_sum.Y);
+        fp2_copy(final_buckets[bucket_idx].Z, bucket_sum.Z);
     }
-    
-    fp2_copy(final_buckets[bucket_idx].X, bucket_sum.X);
-    fp2_copy(final_buckets[bucket_idx].Y, bucket_sum.Y);
-    fp2_copy(final_buckets[bucket_idx].Z, bucket_sum.Z);
 }
 
 // Old template version removed - using specialized kernels instead
@@ -2466,8 +2567,17 @@ void point_msm_u64_async_g1(cudaStream_t stream, uint32_t gpu_index, G1Projectiv
     G1ProjectivePoint* d_block_buckets = d_scratch;
     G1ProjectivePoint* d_final_buckets = d_scratch + num_blocks * MSM_BUCKET_COUNT;
     
+    // Debug: Verify buffer layout
+    size_t expected_scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint);
+    printf("DEBUG MSM: n=%d, num_blocks=%d, threadsPerBlock=%d\n", n, num_blocks, threadsPerBlock);
+    printf("DEBUG MSM: d_scratch=%p, d_block_buckets=%p, d_final_buckets=%p\n", 
+           d_scratch, d_block_buckets, d_final_buckets);
+    printf("DEBUG MSM: expected_scratch_size=%zu bytes, d_final_buckets offset=%zu bytes\n",
+           expected_scratch_size, (size_t)(d_final_buckets - d_scratch) * sizeof(G1ProjectivePoint));
+    
     for (int window_idx = num_windows - 1; window_idx >= 0; window_idx--) {
-        // Clear final buckets
+        printf("point_msm_u64_async_g1 window_idx: %d\n", window_idx);
+        // Clear final buckets (initialize all to infinity to avoid uninitialized memory)
         int clear_blocks = (MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
         kernel_clear_buckets_projective_g1<<<clear_blocks, threadsPerBlock, 0, stream>>>(d_final_buckets, MSM_BUCKET_COUNT);
         check_cuda_error(cudaGetLastError());
@@ -2476,6 +2586,8 @@ void point_msm_u64_async_g1(cudaStream_t stream, uint32_t gpu_index, G1Projectiv
         int clear_block_blocks = (num_blocks * MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
         kernel_clear_buckets_projective_g1<<<clear_block_blocks, threadsPerBlock, 0, stream>>>(d_block_buckets, num_blocks * MSM_BUCKET_COUNT);
         check_cuda_error(cudaGetLastError());
+        // Synchronize to ensure clear completes before accumulation starts
+        cuda_synchronize_stream(stream, gpu_index);
         
         // Phase 1: Accumulate points into per-block buckets using projective coordinates (no inversions!)
         const int WARP_SIZE = 32;
@@ -2486,37 +2598,76 @@ void point_msm_u64_async_g1(cudaStream_t stream, uint32_t gpu_index, G1Projectiv
         if (num_warps > 1) {
             shared_mem_size += num_warps * MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint);  // Per-warp buckets
         }
+
         kernel_accumulate_buckets_u64_projective_g1<<<num_blocks, threadsPerBlock, shared_mem_size, stream>>>(
             d_block_buckets, d_points, d_scalars, n, window_idx, MSM_WINDOW_SIZE
         );
         check_cuda_error(cudaGetLastError());
-        
+
         // Phase 2: Reduce per-block bucket contributions to final buckets
+        // Clear final buckets again before reduce to ensure all are initialized
+        kernel_clear_buckets_projective_g1<<<clear_blocks, threadsPerBlock, 0, stream>>>(d_final_buckets, MSM_BUCKET_COUNT);
+        check_cuda_error(cudaGetLastError());
+        cuda_synchronize_stream(stream, gpu_index);
+        
+        // Use enough threads to ensure all MSM_BUCKET_COUNT buckets are written
         int reduce_threads = threadsPerBlock;
         int reduce_blocks = (MSM_BUCKET_COUNT + reduce_threads - 1) / reduce_threads;
+        // Ensure we have at least MSM_BUCKET_COUNT threads total to cover all buckets
+        if (reduce_blocks * reduce_threads < MSM_BUCKET_COUNT) {
+            reduce_blocks = (MSM_BUCKET_COUNT + reduce_threads - 1) / reduce_threads;
+        }
         kernel_reduce_buckets_projective_g1<<<reduce_blocks, reduce_threads, 0, stream>>>(
             d_final_buckets, d_block_buckets, num_blocks, MSM_BUCKET_COUNT
         );
         check_cuda_error(cudaGetLastError());
-        
+        cuda_synchronize_stream(stream, gpu_index);
+
         // Combine final buckets and accumulate into result (CPU version, projective)
         G1ProjectivePoint h_buckets[MSM_BUCKET_COUNT];
         G1ProjectivePoint h_result;
         
-        // Synchronize stream before copying
+        // Copy buckets from device to host using async copy on our stream (matches C++ test pattern)
+        cuda_memcpy_async_to_cpu(h_buckets, d_final_buckets, MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint), stream, gpu_index);
+        
+        // Copy current result from device to host using async copy on our stream
+        cuda_memcpy_async_to_cpu(&h_result, d_result, sizeof(G1ProjectivePoint), stream, gpu_index);
+        
+        // Synchronize stream to ensure copies complete
         cuda_synchronize_stream(stream, gpu_index);
-        
-        // IMPORTANT: cudaMemcpy uses the default stream, so we must ensure ALL pending operations
-        // on our custom stream are complete before using cudaMemcpy
-        // cudaDeviceSynchronize() ensures all streams on the device are synchronized
-        check_cuda_error(cudaDeviceSynchronize());
-        
-        // Copy buckets from device to host
-        check_cuda_error(cudaMemcpy(h_buckets, d_final_buckets, MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint), cudaMemcpyDeviceToHost));
-        
-        // Copy current result from device to host
-        check_cuda_error(cudaMemcpy(&h_result, d_result, sizeof(G1ProjectivePoint), cudaMemcpyDeviceToHost));
-        
+
+        // Print bucket contents
+        // printf("Window %d buckets:\n", window_idx);
+        // for (int i = 0; i < MSM_BUCKET_COUNT; i++) {
+        //     printf("Bucket[%d]: X=(%llu,%llu,%llu,%llu,%llu,%llu,%llu) "
+        //            "Y=(%llu,%llu,%llu,%llu,%llu,%llu,%llu) "
+        //            "Z=(%llu,%llu,%llu,%llu,%llu,%llu,%llu)\n",
+        //            i,
+        //            h_buckets[i].X.limb[0], h_buckets[i].X.limb[1], h_buckets[i].X.limb[2],
+        //            h_buckets[i].X.limb[3], h_buckets[i].X.limb[4], h_buckets[i].X.limb[5],
+        //            h_buckets[i].X.limb[6],
+        //            h_buckets[i].Y.limb[0], h_buckets[i].Y.limb[1], h_buckets[i].Y.limb[2],
+        //            h_buckets[i].Y.limb[3], h_buckets[i].Y.limb[4], h_buckets[i].Y.limb[5],
+        //            h_buckets[i].Y.limb[6],
+        //            h_buckets[i].Z.limb[0], h_buckets[i].Z.limb[1], h_buckets[i].Z.limb[2],
+        //            h_buckets[i].Z.limb[3], h_buckets[i].Z.limb[4], h_buckets[i].Z.limb[5],
+        //            h_buckets[i].Z.limb[6]);
+        // }
+        //
+        // // Print current result
+        // printf("Current result: X=(%llu,%llu,%llu,%llu,%llu,%llu,%llu) "
+        //        "Y=(%llu,%llu,%llu,%llu,%llu,%llu,%llu) "
+        //        "Z=(%llu,%llu,%llu,%llu,%llu,%llu,%llu)\n",
+        //        h_result.X.limb[0], h_result.X.limb[1], h_result.X.limb[2],
+        //        h_result.X.limb[3], h_result.X.limb[4], h_result.X.limb[5],
+        //        h_result.X.limb[6],
+        //        h_result.Y.limb[0], h_result.Y.limb[1], h_result.Y.limb[2],
+        //        h_result.Y.limb[3], h_result.Y.limb[4], h_result.Y.limb[5],
+        //        h_result.Y.limb[6],
+        //        h_result.Z.limb[0], h_result.Z.limb[1], h_result.Z.limb[2],
+        //        h_result.Z.limb[3], h_result.Z.limb[4], h_result.Z.limb[5],
+        //        h_result.Z.limb[6]);
+
         // Combine buckets on CPU (projective version)
         combine_buckets_cpu_projective_g1(h_result, h_buckets, MSM_BUCKET_COUNT, window_idx);
         
@@ -2559,6 +2710,8 @@ void point_msm_u64_async_g2(cudaStream_t stream, uint32_t gpu_index, G2Projectiv
         int clear_block_blocks = (num_blocks * MSM_BUCKET_COUNT + threadsPerBlock - 1) / threadsPerBlock;
         kernel_clear_buckets_projective_g2<<<clear_block_blocks, threadsPerBlock, 0, stream>>>(d_block_buckets, num_blocks * MSM_BUCKET_COUNT);
         check_cuda_error(cudaGetLastError());
+        // Synchronize to ensure clear completes before accumulation starts
+        cuda_synchronize_stream(stream, gpu_index);
         
         const int WARP_SIZE = 32;
         int num_warps = (threadsPerBlock + WARP_SIZE - 1) / WARP_SIZE;

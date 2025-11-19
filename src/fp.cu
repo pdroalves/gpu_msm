@@ -130,13 +130,12 @@ __host__ __device__ void fp_one(Fp& a) {
 
 // Set to one in Montgomery form: R mod p
 __host__ __device__ void fp_one_montgomery(Fp& a) {
-    const Fp& r2 = fp_r2();
-    // R mod p = R^2 * R_INV mod p
-    // Actually, R mod p is just the Montgomery form of 1
-    // We can compute it by converting 1 to Montgomery
+    // R mod p is the Montgomery form of 1
+    // We compute it by converting 1 to Montgomery form: 1 * R mod p = R mod p
+    // This is done by: 1 * R^2 * R_INV mod p = R mod p
     Fp one;
-    fp_one(one);
-    fp_to_montgomery(a, one);
+    fp_one(one);  // one = 1 in normal form
+    fp_to_montgomery(a, one);  // a = 1 * R mod p = R mod p (in Montgomery form)
 }
 
 __host__ __device__ void fp_copy(Fp& dst, const Fp& src) {

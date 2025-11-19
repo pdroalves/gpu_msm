@@ -37,6 +37,9 @@ pub mod conversions;
 #[cfg(test)]
 mod example;
 
+#[cfg(test)]
+pub mod debug_msm;
+
 pub use types::*;
 pub use conversions::*;
 

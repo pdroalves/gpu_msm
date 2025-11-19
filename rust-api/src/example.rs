@@ -93,6 +93,12 @@ mod tests {
     }
     
     #[test]
+    fn test_debug_msm_compare() {
+        use crate::debug_msm;
+        debug_msm::debug_msm_compare();
+    }
+    
+    #[test]
     fn test_g1_msm_vs_tfhe_zk_pok() {
         use super::super::conversions::{TfheZkPokG1Affine, TfheZkPokG1Projective};
         use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
@@ -104,18 +110,18 @@ mod tests {
         eprintln!("tfhe-zk-pok generator (extracted via our conversion - normal form):");
         eprintln!("  {}", g1_gen);
         
-        // // CRITICAL CHECK: Our hardcoded generator values are now stored in STANDARD form
-        // // Convert the tfhe generator to Montgomery to ensure it matches the runtime conversion
-        // use crate::ffi::Fp;
-        // unsafe {
-        //     let mut x_mont = Fp { limb: [0; 7] };
-        //     let mut y_mont = Fp { limb: [0; 7] };
-        //     crate::ffi::fp_to_montgomery_wrapper(&mut x_mont, &g1_gen.inner().x);
-        //     crate::ffi::fp_to_montgomery_wrapper(&mut y_mont, &g1_gen.inner().y);
-        //     let g1_gen_mont = G1Affine::new(x_mont.limb, y_mont.limb, false);
-        //     eprintln!("tfhe-zk-pok generator CONVERTED to Montgomery form:");
-        //     eprintln!("  {}", g1_gen_mont);
-        // }
+        // CRITICAL CHECK: Our hardcoded generator values are now stored in STANDARD form
+        // Convert the tfhe generator to Montgomery to ensure it matches the runtime conversion
+        use crate::ffi::Fp;
+        unsafe {
+            let mut x_mont = Fp { limb: [0; 7] };
+            let mut y_mont = Fp { limb: [0; 7] };
+            crate::ffi::fp_to_montgomery_wrapper(&mut x_mont, &g1_gen.inner().x);
+            crate::ffi::fp_to_montgomery_wrapper(&mut y_mont, &g1_gen.inner().y);
+            let g1_gen_mont = G1Affine::new(x_mont.limb, y_mont.limb, false);
+            eprintln!("tfhe-zk-pok generator CONVERTED to Montgomery form:");
+            eprintln!("  {}", g1_gen_mont);
+        }
         
         // Create test data: scalar=1 should return generator
         eprintln!("\n=== Testing with scalar 1 (should return generator) ===");
@@ -123,7 +129,7 @@ mod tests {
         let points: Vec<G1Affine> = vec![g1_gen];
         let scalars: Vec<u64> = vec![1];
 
-        println!("points: [{}]", points.iter().map(|p| format!("{}", p)).collect::<Vec<_>>().join(", "));
+        // println!("points: [{}]", points.iter().map(|p| format!("{}", p)).collect::<Vec<_>>().join(", "));
         
         // Compute MSM using our CUDA implementation
         let gpu_index = 0;

@@ -200,6 +200,9 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
     G1Point* d_result_affine = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_expected_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     
+    // Initialize allocated memory to zero to avoid uninitialized access warnings
+    cuda_memset_async(d_expected_normal, 0, sizeof(G1Point), stream, gpu_index);
+    
     // Convert projective to affine on device
     cuda_synchronize_stream(stream, gpu_index);
     G1ProjectivePoint h_result_proj;
@@ -433,6 +436,9 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
     G2Point* d_result_affine = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
     G2Point* d_expected_normal = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
     
+    // Initialize allocated memory to zero to avoid uninitialized access warnings
+    cuda_memset_async(d_expected_normal, 0, sizeof(G2Point), stream, gpu_index);
+    
     // Convert projective to affine on device
     cuda_synchronize_stream(stream, gpu_index);
     G2ProjectivePoint h_result_proj;
@@ -539,6 +545,10 @@ TEST_F(MSMTest, G1MSMLargeN) {
     // Convert projective result to affine, then from Montgomery form before comparing
     G1Point* d_result_affine = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_expected_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    
+    // Initialize allocated memory to zero to avoid uninitialized access warnings
+    cuda_memset_async(d_result_affine, 0, sizeof(G1Point), stream, gpu_index);
+    cuda_memset_async(d_expected_normal, 0, sizeof(G1Point), stream, gpu_index);
     
     // Convert projective to affine on host
     cuda_synchronize_stream(stream, gpu_index);
