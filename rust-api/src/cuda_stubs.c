@@ -36,6 +36,19 @@ void* __cudaRegisterLinkedBinary_0e52b419_5_fp_cu_6531ec1d(void* a, void* b, voi
     return (void*)0;
 }
 
+// Updated hash for fp.cu after hardcoding constants
+__attribute__((weak))
+void* __cudaRegisterLinkedBinary_0e52b419_5_fp_cu_7874d10b(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k) {
+    (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i; (void)j; (void)k;
+    return (void*)0;
+}
+
+__attribute__((weak))
+void* __cudaRegisterLinkedBinary_0e52b419_5_fp_cu_fc9d9070(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k) {
+    (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i; (void)j; (void)k;
+    return (void*)0;
+}
+
 __attribute__((weak))
 void* __cudaRegisterLinkedBinary_e81dd329_6_fp2_cu_fa47e05b(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k) {
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i; (void)j; (void)k;

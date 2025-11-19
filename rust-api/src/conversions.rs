@@ -12,7 +12,6 @@ pub use tfhe_zk_pok::curve_446::{Fq, Fq2};
 
 // Import arkworks traits that are re-exported through tfhe-zk-pok
 use ark_ec::AffineRepr;
-use ark_ff::PrimeField;
 
 /// Trait for converting to tfhe-zk-pok G1Affine type
 pub trait ToTfheZkPokG1Affine {
@@ -64,13 +63,40 @@ fn fp_to_fq(limbs: [u64; 7]) -> Fq {
 fn fq_to_fp(fq: &Fq) -> [u64; 7] {
     // Extract limbs from Fq's internal representation
     // In arkworks, Fq has a `into_bigint()` method that gives us the limbs
+    // IMPORTANT: arkworks stores field elements in Montgomery form internally!
+    // The into_bigint() method returns the Montgomery representation
     use ark_ff::PrimeField;
     let bigint = fq.into_bigint();
     let mut limbs = [0u64; 7];
     for (i, limb) in bigint.as_ref().iter().take(7).enumerate() {
         limbs[i] = *limb;
     }
+    // Note: These limbs are in Montgomery form, matching our internal representation
     limbs
+}
+
+// Helper function to convert G1Affine from Montgomery form to normal form
+pub fn g1_affine_from_montgomery(g1_mont: &crate::types::G1Affine) -> crate::types::G1Affine {
+    let mut result = crate::types::G1Affine::infinity();
+    if !g1_mont.is_infinity() {
+        unsafe {
+            // Call the C wrapper to convert from Montgomery form
+            crate::ffi::g1_from_montgomery_wrapper(result.inner_mut(), g1_mont.inner());
+        }
+    }
+    result
+}
+
+// Helper function to convert G2Affine from Montgomery form to normal form
+pub fn g2_affine_from_montgomery(g2_mont: &crate::types::G2Affine) -> crate::types::G2Affine {
+    let mut result = crate::types::G2Affine::infinity();
+    if !g2_mont.is_infinity() {
+        unsafe {
+            // Call the C wrapper to convert from Montgomery form
+            crate::ffi::g2_from_montgomery_wrapper(result.inner_mut(), g2_mont.inner());
+        }
+    }
+    result
 }
 
 // Helper function to convert Fp2 (two 7-limb arrays) to tfhe-zk-pok's Fq2

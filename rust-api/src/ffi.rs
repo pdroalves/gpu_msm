@@ -100,5 +100,10 @@ extern "C" {
         n: std::os::raw::c_int,
         gpu_index: c_uint,
     ) -> std::os::raw::c_int;
+    
+    // Montgomery form conversion functions
+    pub fn g1_from_montgomery_wrapper(result: *mut G1Point, point: *const G1Point);
+    pub fn g2_from_montgomery_wrapper(result: *mut G2Point, point: *const G2Point);
+    pub fn fp_to_montgomery_wrapper(result: *mut Fp, value: *const Fp);
 }
 

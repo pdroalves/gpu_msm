@@ -2353,3 +2353,35 @@ TEST_F(FpArithmeticTest, CurveG2PointAtInfinity) {
     EXPECT_TRUE(is_on_curve_g2(point)) << "Point at infinity should be on curve";
 }
 
+
+// Temporary test to extract generator Montgomery values for hardcoding
+TEST(PrintGenerators, GetMontgomeryValues) {
+    init_device_modulus(nullptr, 0);
+    init_device_generators(nullptr, 0);
+    
+    G1Point g1 = g1_generator();
+    G2Point g2 = g2_generator();
+    fp_to_montgomery(g1.x, g1.x);
+    fp_to_montgomery(g1.y, g1.y);
+    fp_to_montgomery(g2.x.c0, g2.x.c0);
+    fp_to_montgomery(g2.x.c1, g2.x.c1);
+    fp_to_montgomery(g2.y.c0, g2.y.c0);
+    fp_to_montgomery(g2.y.c1, g2.y.c1);
+    
+    printf("\n=== G1 Generator (Montgomery form) ===\n");
+    printf("X: ");
+    for (int i = 0; i < 7; i++) printf("0x%016llxULL%s", g1.x.limb[i], i<6?", ":"\n");
+    printf("Y: ");
+    for (int i = 0; i < 7; i++) printf("0x%016llxULL%s", g1.y.limb[i], i<6?", ":"\n");
+    
+    printf("\n=== G2 Generator (Montgomery form) ===\n");
+    printf("X_C0: ");
+    for (int i = 0; i < 7; i++) printf("0x%016llxULL%s", g2.x.c0.limb[i], i<6?", ":"\n");
+    printf("X_C1: ");
+    for (int i = 0; i < 7; i++) printf("0x%016llxULL%s", g2.x.c1.limb[i], i<6?", ":"\n");
+    printf("Y_C0: ");
+    for (int i = 0; i < 7; i++) printf("0x%016llxULL%s", g2.y.c0.limb[i], i<6?", ":"\n");
+    printf("Y_C1: ");
+    for (int i = 0; i < 7; i++) printf("0x%016llxULL%s", g2.y.c1.limb[i], i<6?", ":"\n");
+    printf("\n");
+}

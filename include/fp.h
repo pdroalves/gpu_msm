@@ -15,15 +15,16 @@ struct Fp {
 };
 
 // Prime modulus p for BLS12-446
-// Device-side constant (declared in fp.cu)
-extern __constant__ Fp DEVICE_MODULUS;
+// Device-side constant (hardcoded in fp.cu at compile time)
+extern __constant__ const Fp DEVICE_MODULUS;
 
 // Montgomery constants
 // R = 2^448 (for 7 limbs of 64 bits)
 // R^2 mod p, R_INV mod p, and p' = -p^(-1) mod 2^64
-extern __constant__ Fp DEVICE_R2;
-extern __constant__ Fp DEVICE_R_INV;
-extern __constant__ uint64_t DEVICE_P_PRIME;
+// All hardcoded at compile time
+extern __constant__ const Fp DEVICE_R2;
+extern __constant__ const Fp DEVICE_R_INV;
+extern __constant__ const uint64_t DEVICE_P_PRIME;
 
 // Host-side initialization function
 // Call this once per device before using device code

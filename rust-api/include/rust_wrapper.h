@@ -58,6 +58,11 @@ int g2_msm_wrapper(
     uint32_t gpu_index
 );
 
+// Montgomery conversion helpers
+void g1_from_montgomery_wrapper(G1Point* result, const G1Point* point);
+void g2_from_montgomery_wrapper(G2Point* result, const G2Point* point);
+void fp_to_montgomery_wrapper(Fp* result, const Fp* value);
+
 #ifdef __cplusplus
 }
 #endif

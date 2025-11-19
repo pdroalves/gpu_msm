@@ -11,93 +11,51 @@
 // Converted from decimal to hex and split into 7 limbs of 64 bits each
 
 // For CUDA device code, we use __constant__ memory
-// Note: Cannot initialize directly, must use cudaMemcpyToSymbol
-__constant__ Fp DEVICE_MODULUS;
-__constant__ Fp DEVICE_R2;
-__constant__ Fp DEVICE_R_INV;
-__constant__ uint64_t DEVICE_P_PRIME;
+// Constants are hardcoded at compile time (like sppark) to avoid cudaMemcpyToSymbol
+__constant__ const Fp DEVICE_MODULUS = {
+    {0x311c0026aab0aaabULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
+     0x0f75a64bbac71602ULL, 0x0095a4b78a02fe32ULL, 0x200fc34965aad640ULL,
+     0x3cdee0fb28c5e535ULL}
+};
 
-// Host-side modulus initialization function
-// BLS12-446 Fq modulus in little-endian format
-// From tfhe-rs: 172824703542857155980071276579495962243492693522789898437834836356385656662277472896902502740297183690175962001546428467344062165330603
-static Fp get_host_modulus() {
-    Fp p;
-    p.limb[0] = 0x311c0026aab0aaabULL;  // LSB
-    p.limb[1] = 0x56ee4528c573b5ccULL;
-    p.limb[2] = 0x824e6dc3e23acdeeULL;
-    p.limb[3] = 0x0f75a64bbac71602ULL;
-    p.limb[4] = 0x0095a4b78a02fe32ULL;
-    p.limb[5] = 0x200fc34965aad640ULL;
-    p.limb[6] = 0x3cdee0fb28c5e535ULL;  // MSB
-    return p;
-}
+__constant__ const Fp DEVICE_R2 = {
+    {0x2AFF01DDDC752B45ULL, 0x92C772A7421CCF5BULL, 0x140EEF29C347DAD6ULL,
+     0xF5A1400C22EA595EULL, 0x99D91C9FEC145218ULL, 0x3BB6537F90143D4BULL,
+     0x3627854C9BE7974FULL}
+};
 
-// R^2 mod p for Montgomery reduction
-// R = 2^448 (for 7 limbs of 64 bits)
-static Fp get_host_r2() {
-    Fp r2;
-    r2.limb[0] = 0x2AFF01DDDC752B45ULL;  // LSB
-    r2.limb[1] = 0x92C772A7421CCF5BULL;
-    r2.limb[2] = 0x140EEF29C347DAD6ULL;
-    r2.limb[3] = 0xF5A1400C22EA595EULL;
-    r2.limb[4] = 0x99D91C9FEC145218ULL;
-    r2.limb[5] = 0x3BB6537F90143D4BULL;
-    r2.limb[6] = 0x3627854C9BE7974FULL;  // MSB
-    return r2;
-}
+__constant__ const Fp DEVICE_R_INV = {
+    {0xCE2560B51652D82FULL, 0xA0166C2F90C0838EULL, 0x6C2028836577CA52ULL,
+     0x28BE97CD54A76C2CULL, 0x0C01F5F4B5806D69ULL, 0x498338A6A4F43367ULL,
+     0x32E6A14BC7F5FA16ULL}
+};
 
-// R_INV mod p (R^(-1) mod p)
-static Fp get_host_r_inv() {
-    Fp r_inv;
-    r_inv.limb[0] = 0xCE2560B51652D82FULL;  // LSB
-    r_inv.limb[1] = 0xA0166C2F90C0838EULL;
-    r_inv.limb[2] = 0x6C2028836577CA52ULL;
-    r_inv.limb[3] = 0x28BE97CD54A76C2CULL;
-    r_inv.limb[4] = 0x0C01F5F4B5806D69ULL;
-    r_inv.limb[5] = 0x498338A6A4F43367ULL;
-    r_inv.limb[6] = 0x32E6A14BC7F5FA16ULL;  // MSB
-    return r_inv;
-}
+__constant__ const uint64_t DEVICE_P_PRIME = 0xcd63fd900035fffdULL;
 
-// p' = -p^(-1) mod 2^64 (Montgomery constant)
-static uint64_t get_host_p_prime() {
-    return 0xcd63fd900035fffdULL;
-}
+// Host-side helper functions removed - values are now hardcoded directly
+// in the accessor functions (fp_modulus, fp_r2, fp_r_inv, fp_p_prime)
 
 // Host function to initialize device constants
-// Must be called once per device before using device code
-// stream: CUDA stream to use for memory copy operations
-// gpu_index: GPU device index to use
+// Constants are now hardcoded at compile time, so this function is a no-op
+// Kept for API compatibility
 void init_device_modulus(cudaStream_t stream, uint32_t gpu_index) {
-    // Set the device context
-    cuda_set_device(gpu_index);
-    
-    Fp host_mod = get_host_modulus();
-    Fp host_r2 = get_host_r2();
-    Fp host_r_inv = get_host_r_inv();
-    uint64_t host_p_prime = get_host_p_prime();
-    
-    // Note: cudaMemcpyToSymbolAsync doesn't exist for __constant__ memory
-    // We must use synchronous cudaMemcpyToSymbol, but we ensure the device is set correctly
-    check_cuda_error(cudaMemcpyToSymbol(DEVICE_MODULUS, &host_mod, sizeof(Fp)));
-    check_cuda_error(cudaMemcpyToSymbol(DEVICE_R2, &host_r2, sizeof(Fp)));
-    check_cuda_error(cudaMemcpyToSymbol(DEVICE_R_INV, &host_r_inv, sizeof(Fp)));
-    check_cuda_error(cudaMemcpyToSymbol(DEVICE_P_PRIME, &host_p_prime, sizeof(uint64_t)));
-    
-    // Synchronize stream to ensure completion
-    if (stream != nullptr) {
-        cuda_synchronize_stream(stream, gpu_index);
-    }
+    // Constants are hardcoded at compile time, no initialization needed
+    (void)stream;
+    (void)gpu_index;
 }
 
 // Helper to get modulus reference
 // On device: returns DEVICE_MODULUS from constant memory
-// On host: returns a static copy
+// On host: returns a hardcoded copy (same as device)
 __host__ __device__ const Fp& fp_modulus() {
 #ifdef __CUDA_ARCH__
     return DEVICE_MODULUS;
 #else
-    static const Fp host_mod = get_host_modulus();
+    static const Fp host_mod = {
+        {0x311c0026aab0aaabULL, 0x56ee4528c573b5ccULL, 0x824e6dc3e23acdeeULL,
+         0x0f75a64bbac71602ULL, 0x0095a4b78a02fe32ULL, 0x200fc34965aad640ULL,
+         0x3cdee0fb28c5e535ULL}
+    };
     return host_mod;
 #endif
 }
@@ -107,7 +65,11 @@ __host__ __device__ const Fp& fp_r2() {
 #ifdef __CUDA_ARCH__
     return DEVICE_R2;
 #else
-    static const Fp host_r2 = get_host_r2();
+    static const Fp host_r2 = {
+        {0x2AFF01DDDC752B45ULL, 0x92C772A7421CCF5BULL, 0x140EEF29C347DAD6ULL,
+         0xF5A1400C22EA595EULL, 0x99D91C9FEC145218ULL, 0x3BB6537F90143D4BULL,
+         0x3627854C9BE7974FULL}
+    };
     return host_r2;
 #endif
 }
@@ -117,7 +79,11 @@ __host__ __device__ const Fp& fp_r_inv() {
 #ifdef __CUDA_ARCH__
     return DEVICE_R_INV;
 #else
-    static const Fp host_r_inv = get_host_r_inv();
+    static const Fp host_r_inv = {
+        {0xCE2560B51652D82FULL, 0xA0166C2F90C0838EULL, 0x6C2028836577CA52ULL,
+         0x28BE97CD54A76C2CULL, 0x0C01F5F4B5806D69ULL, 0x498338A6A4F43367ULL,
+         0x32E6A14BC7F5FA16ULL}
+    };
     return host_r_inv;
 #endif
 }
@@ -127,7 +93,7 @@ __host__ __device__ uint64_t fp_p_prime() {
 #ifdef __CUDA_ARCH__
     return DEVICE_P_PRIME;
 #else
-    return get_host_p_prime();
+    return 0xcd63fd900035fffdULL;
 #endif
 }
 

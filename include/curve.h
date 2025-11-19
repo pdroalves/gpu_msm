@@ -101,10 +101,12 @@ __host__ __device__ void point_neg(PointType& result, const PointType& p);
 template<typename PointType>
 __host__ __device__ void point_scalar_mul(PointType& result, const PointType& point, const uint64_t* scalar, int scalar_limbs);
 
-// Generator points (to be set from tfhe-rs)
-// These will be initialized by init_device_generators()
-extern __constant__ G1Point DEVICE_G1_GENERATOR;
-extern __constant__ G2Point DEVICE_G2_GENERATOR;
+// Generator points (standard form hardcoded; converted to Montgomery at runtime)
+extern __constant__ const G1Point DEVICE_G1_GENERATOR_STANDARD;
+extern __constant__ const G2Point DEVICE_G2_GENERATOR_STANDARD;
+
+extern __device__ G1Point DEVICE_G1_GENERATOR_MONT;
+extern __device__ G2Point DEVICE_G2_GENERATOR_MONT;
 
 // Initialize device generator points
 // Must be called once per device after init_device_curve()

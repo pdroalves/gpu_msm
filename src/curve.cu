@@ -271,51 +271,30 @@ __host__ __device__ void point_scalar_mul(PointType& result, const PointType& po
 // G1 curve: y^2 = x^3 + b
 // G2 curve: y^2 = x^3 + b' where b' = b * ξ (ξ is a non-residue in Fp2)
 
-// For BLS12 curves, typically b = 4
-// This can be updated with the actual BLS12-446 parameter if different
-static Fp get_host_curve_b_g1() {
-    Fp b;
-    fp_zero(b);
-    b.limb[0] = 4;  // b = 4 (typical for BLS12 curves)
-    return b;
-}
-
-// G2 curve coefficient: b' = b * ξ where ξ is a non-residue
-// For Fp2, typically ξ = i (the imaginary unit)
-// So b' = (0 + 4*i) in Fp2
-static Fp2 get_host_curve_b_g2() {
-    Fp2 b_prime;
-    fp2_zero(b_prime);
-    fp_zero(b_prime.c0);  // Real part = 0
-    fp_zero(b_prime.c1);
-    b_prime.c1.limb[0] = 4;  // Imaginary part = 4 (b * i)
-    return b_prime;
-}
+// Host-side helper functions removed - values are now hardcoded directly
+// in the accessor functions (curve_b_g1, curve_b_g2)
 
 // Device constants for curve parameters
-__constant__ Fp DEVICE_CURVE_B_G1;
-__constant__ Fp2 DEVICE_CURVE_B_G2;
+// Hardcoded at compile time (like sppark) to avoid cudaMemcpyToSymbol
+// G1 curve: y^2 = x^3 + 4
+__constant__ const Fp DEVICE_CURVE_B_G1 = {
+    {4ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL}
+};
+
+// G2 curve: y^2 = x^3 + 4*i (where i is the imaginary unit in Fp2)
+// So b' = (0 + 4*i) in Fp2
+__constant__ const Fp2 DEVICE_CURVE_B_G2 = {
+    {0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL},  // c0 = 0
+    {4ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL}   // c1 = 4
+};
 
 // Initialize device curve constants
-// Must be called once per device before using device code
-// stream: CUDA stream to use (can be nullptr for default stream synchronization)
-// gpu_index: GPU device index to use
+// Constants are now hardcoded at compile time, so this function is a no-op
+// Kept for API compatibility
 void init_device_curve(cudaStream_t stream, uint32_t gpu_index) {
-    // Set the device context
-    cuda_set_device(gpu_index);
-    
-    Fp host_b_g1 = get_host_curve_b_g1();
-    Fp2 host_b_g2 = get_host_curve_b_g2();
-    
-    // Note: cudaMemcpyToSymbolAsync doesn't exist for __constant__ memory
-    // We must use synchronous cudaMemcpyToSymbol, but we ensure the device is set correctly
-    check_cuda_error(cudaMemcpyToSymbol(DEVICE_CURVE_B_G1, &host_b_g1, sizeof(Fp)));
-    check_cuda_error(cudaMemcpyToSymbol(DEVICE_CURVE_B_G2, &host_b_g2, sizeof(Fp2)));
-    
-    // Synchronize stream to ensure completion
-    if (stream != nullptr) {
-        cuda_synchronize_stream(stream, gpu_index);
-    }
+    // Constants are hardcoded at compile time, no initialization needed
+    (void)stream;
+    (void)gpu_index;
 }
 
 // Get curve coefficient b for G1
@@ -323,7 +302,7 @@ __host__ __device__ const Fp& curve_b_g1() {
 #ifdef __CUDA_ARCH__
     return DEVICE_CURVE_B_G1;
 #else
-    static const Fp host_b = get_host_curve_b_g1();
+    static const Fp host_b = {{4ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL}};
     return host_b;
 #endif
 }
@@ -333,7 +312,10 @@ __host__ __device__ const Fp2& curve_b_g2() {
 #ifdef __CUDA_ARCH__
     return DEVICE_CURVE_B_G2;
 #else
-    static const Fp2 host_b = get_host_curve_b_g2();
+    static const Fp2 host_b = {
+        {0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL},  // c0 = 0
+        {4ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL}   // c1 = 4
+    };
     return host_b;
 #endif
 }
@@ -802,121 +784,102 @@ __host__ __device__ void projective_to_affine_g2(G2Point& affine, const G2Projec
 // Generator Points
 // ============================================================================
 
-__constant__ G1Point DEVICE_G1_GENERATOR;
-__constant__ G2Point DEVICE_G2_GENERATOR;
+// Generators hardcoded in STANDARD form (matches tfhe-zk-pok)
+__constant__ const G1Point DEVICE_G1_GENERATOR_STANDARD = {
+    {0x3bf9166c8236f4faULL, 0x8bc02b7cbe6a9e8dULL, 0x11c1e56b3e4bc80bULL,
+     0x6b20d782901a6f62ULL, 0x2ce8c34265bf3841ULL, 0x11b73d3d76ae9851ULL,
+     0x326ed6bd777fc6a3ULL}, // x
+    {0xfe6f792612016b30ULL, 0x22db0ce6034a9db9ULL, 0xb9093f32002756daULL,
+     0x39d7f424b6660204ULL, 0xf843c947aa57f571ULL, 0xd6d62d244e413636ULL,
+     0x1a7caf4a4d3887a6ULL}, // y
+    false // infinity
+};
 
+__constant__ const G2Point DEVICE_G2_GENERATOR_STANDARD = {
+    { // x
+        {0x0e529ee4dce9991dULL, 0xd6ebaf149094f1ccULL, 0x043c6bf16312d638ULL,
+         0x062b61439640e885ULL, 0x18dad8ed784dd225ULL, 0xa57c0038441f7d15ULL,
+         0x21f8d4a76f74541aULL}, // c0
+        {0xcaf5185423a7d23aULL, 0x7cef6acb145b6413ULL, 0x2879dd439b019b8bULL,
+         0x71449cdeca4f0007ULL, 0xdebaf4a2c5534527ULL, 0xa1b4e791d1b86560ULL,
+         0x1e0f563c601bb8dcULL}  // c1
+    },
+    { // y
+        {0x274315837455b919ULL, 0x82039e4221ff3507ULL, 0x00346cebad16a036ULL,
+         0x0177bfd6654e681eULL, 0xddff621b5db3f897ULL, 0x0cc61570301497a7ULL,
+         0x115ea2305a78f646ULL}, // c0
+        {0x392236e9cf2976c2ULL, 0xd8ab17c84b9f03cdULL, 0x8a8e6755f9d82fd1ULL,
+         0x7532834528cd5a64ULL, 0x0b0bcc3fb6f2161cULL, 0x76a2ffcb7d47679dULL,
+         0x25ed2192b203c1feULL}  // c1
+    },
+    false // infinity
+};
 
-// Host-side generator initialization
-// Generator points from tfhe-rs: https://github.com/zama-ai/tfhe-rs/blob/main/tfhe-zk-pok/src/curve_446/mod.rs
-// G1_GENERATOR_X = 143189966182216199425404656824735381247272236095050141599848381692039676741476615087722874458136990266833440576646963466074693171606778
-// G1_GENERATOR_Y = 75202396197342917254523279069469674666303680671605970245803554133573745859131002231546341942288521574682619325841484506619191207488304
-static G1Point get_host_g1_generator() {
-    G1Point gen;
-    gen.infinity = false;
-    
-    // Set G1_GENERATOR_X from hex limbs (little-endian)
-    gen.x.limb[0] = 0x3bf9166c8236f4faULL;
-    gen.x.limb[1] = 0x8bc02b7cbe6a9e8dULL;
-    gen.x.limb[2] = 0x11c1e56b3e4bc80bULL;
-    gen.x.limb[3] = 0x6b20d782901a6f62ULL;
-    gen.x.limb[4] = 0x2ce8c34265bf3841ULL;
-    gen.x.limb[5] = 0x11b73d3d76ae9851ULL;
-    gen.x.limb[6] = 0x326ed6bd777fc6a3ULL;
-    
-    // Set G1_GENERATOR_Y from hex limbs (little-endian)
-    gen.y.limb[0] = 0xfe6f792612016b30ULL;
-    gen.y.limb[1] = 0x22db0ce6034a9db9ULL;
-    gen.y.limb[2] = 0xb9093f32002756daULL;
-    gen.y.limb[3] = 0x39d7f424b6660204ULL;
-    gen.y.limb[4] = 0xf843c947aa57f571ULL;
-    gen.y.limb[5] = 0xd6d62d244e413636ULL;
-    gen.y.limb[6] = 0x1a7caf4a4d3887a6ULL;
-    
-    // Convert to Montgomery form
-    fp_to_montgomery(gen.x, gen.x);
-    fp_to_montgomery(gen.y, gen.y);
-    
-    return gen;
-}
+__device__ G1Point DEVICE_G1_GENERATOR_MONT;
+__device__ G2Point DEVICE_G2_GENERATOR_MONT;
 
-static G2Point get_host_g2_generator() {
-    G2Point gen;
-    gen.infinity = false;
-    
-    // G2_GENERATOR_X_C0 from hex limbs (little-endian)
-    gen.x.c0.limb[0] = 0xe529ee4dce9991dULL;
-    gen.x.c0.limb[1] = 0xd6ebaf149094f1ccULL;
-    gen.x.c0.limb[2] = 0x43c6bf16312d638ULL;
-    gen.x.c0.limb[3] = 0x62b61439640e885ULL;
-    gen.x.c0.limb[4] = 0x18dad8ed784dd225ULL;
-    gen.x.c0.limb[5] = 0xa57c0038441f7d15ULL;
-    gen.x.c0.limb[6] = 0x21f8d4a76f74541aULL;
-    
-    // G2_GENERATOR_X_C1 from hex limbs (little-endian)
-    gen.x.c1.limb[0] = 0xcaf5185423a7d23aULL;
-    gen.x.c1.limb[1] = 0x7cef6acb145b6413ULL;
-    gen.x.c1.limb[2] = 0x2879dd439b019b8bULL;
-    gen.x.c1.limb[3] = 0x71449cdeca4f0007ULL;
-    gen.x.c1.limb[4] = 0xdebaf4a2c5534527ULL;
-    gen.x.c1.limb[5] = 0xa1b4e791d1b86560ULL;
-    gen.x.c1.limb[6] = 0x1e0f563c601bb8dcULL;
-    
-    // G2_GENERATOR_Y_C0 from hex limbs (little-endian)
-    gen.y.c0.limb[0] = 0x274315837455b919ULL;
-    gen.y.c0.limb[1] = 0x82039e4221ff3507ULL;
-    gen.y.c0.limb[2] = 0x346cebad16a036ULL;
-    gen.y.c0.limb[3] = 0x177bfd6654e681eULL;
-    gen.y.c0.limb[4] = 0xddff621b5db3f897ULL;
-    gen.y.c0.limb[5] = 0xcc61570301497a7ULL;
-    gen.y.c0.limb[6] = 0x115ea2305a78f646ULL;
-    
-    // G2_GENERATOR_Y_C1 from hex limbs (little-endian)
-    gen.y.c1.limb[0] = 0x392236e9cf2976c2ULL;
-    gen.y.c1.limb[1] = 0xd8ab17c84b9f03cdULL;
-    gen.y.c1.limb[2] = 0x8a8e6755f9d82fd1ULL;
-    gen.y.c1.limb[3] = 0x7532834528cd5a64ULL;
-    gen.y.c1.limb[4] = 0xb0bcc3fb6f2161cULL;
-    gen.y.c1.limb[5] = 0x76a2ffcb7d47679dULL;
-    gen.y.c1.limb[6] = 0x25ed2192b203c1feULL;
-    
-    // Convert to Montgomery form
-    fp_to_montgomery(gen.x.c0, gen.x.c0);
-    fp_to_montgomery(gen.x.c1, gen.x.c1);
-    fp_to_montgomery(gen.y.c0, gen.y.c0);
-    fp_to_montgomery(gen.y.c1, gen.y.c1);
-    
-    return gen;
+__global__ void kernel_init_generators() {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        DEVICE_G1_GENERATOR_MONT = DEVICE_G1_GENERATOR_STANDARD;
+        fp_to_montgomery(DEVICE_G1_GENERATOR_MONT.x, DEVICE_G1_GENERATOR_MONT.x);
+        fp_to_montgomery(DEVICE_G1_GENERATOR_MONT.y, DEVICE_G1_GENERATOR_MONT.y);
+
+        DEVICE_G2_GENERATOR_MONT = DEVICE_G2_GENERATOR_STANDARD;
+        fp_to_montgomery(DEVICE_G2_GENERATOR_MONT.x.c0, DEVICE_G2_GENERATOR_MONT.x.c0);
+        fp_to_montgomery(DEVICE_G2_GENERATOR_MONT.x.c1, DEVICE_G2_GENERATOR_MONT.x.c1);
+        fp_to_montgomery(DEVICE_G2_GENERATOR_MONT.y.c0, DEVICE_G2_GENERATOR_MONT.y.c0);
+        fp_to_montgomery(DEVICE_G2_GENERATOR_MONT.y.c1, DEVICE_G2_GENERATOR_MONT.y.c1);
+    }
 }
 
 void init_device_generators(cudaStream_t stream, uint32_t gpu_index) {
     cuda_set_device(gpu_index);
-    
-    G1Point host_g1_gen = get_host_g1_generator();
-    G2Point host_g2_gen = get_host_g2_generator();
-    
-    check_cuda_error(cudaMemcpyToSymbol(DEVICE_G1_GENERATOR, &host_g1_gen, sizeof(G1Point)));
-    check_cuda_error(cudaMemcpyToSymbol(DEVICE_G2_GENERATOR, &host_g2_gen, sizeof(G2Point)));
-    
-    if (stream != nullptr) {
-        cuda_synchronize_stream(stream, gpu_index);
-    }
+    kernel_init_generators<<<1, 1, 0, stream>>>();
+    check_cuda_error(cudaGetLastError());
+    cuda_synchronize_stream(stream, gpu_index);
 }
 
 __host__ __device__ const G1Point& g1_generator() {
 #ifdef __CUDA_ARCH__
-    return DEVICE_G1_GENERATOR;
+    return DEVICE_G1_GENERATOR_MONT;
 #else
-    static const G1Point host_gen = get_host_g1_generator();
-    return host_gen;
+    static const G1Point host_gen_standard = {
+        {0x3bf9166c8236f4faULL, 0x8bc02b7cbe6a9e8dULL, 0x11c1e56b3e4bc80bULL,
+         0x6b20d782901a6f62ULL, 0x2ce8c34265bf3841ULL, 0x11b73d3d76ae9851ULL,
+         0x326ed6bd777fc6a3ULL}, // x
+        {0xfe6f792612016b30ULL, 0x22db0ce6034a9db9ULL, 0xb9093f32002756daULL,
+         0x39d7f424b6660204ULL, 0xf843c947aa57f571ULL, 0xd6d62d244e413636ULL,
+         0x1a7caf4a4d3887a6ULL}, // y
+        false // infinity
+    };
+    return host_gen_standard;
 #endif
 }
 
 __host__ __device__ const G2Point& g2_generator() {
 #ifdef __CUDA_ARCH__
-    return DEVICE_G2_GENERATOR;
+    return DEVICE_G2_GENERATOR_MONT;
 #else
-    static const G2Point host_gen = get_host_g2_generator();
-    return host_gen;
+    static const G2Point host_gen_standard = {
+        { // x
+            {0x0e529ee4dce9991dULL, 0xd6ebaf149094f1ccULL, 0x043c6bf16312d638ULL,
+             0x062b61439640e885ULL, 0x18dad8ed784dd225ULL, 0xa57c0038441f7d15ULL,
+             0x21f8d4a76f74541aULL}, // c0
+            {0xcaf5185423a7d23aULL, 0x7cef6acb145b6413ULL, 0x2879dd439b019b8bULL,
+             0x71449cdeca4f0007ULL, 0xdebaf4a2c5534527ULL, 0xa1b4e791d1b86560ULL,
+             0x1e0f563c601bb8dcULL}  // c1
+        },
+        { // y
+            {0x274315837455b919ULL, 0x82039e4221ff3507ULL, 0x00346cebad16a036ULL,
+             0x0177bfd6654e681eULL, 0xddff621b5db3f897ULL, 0x0cc61570301497a7ULL,
+             0x115ea2305a78f646ULL}, // c0
+            {0x392236e9cf2976c2ULL, 0xd8ab17c84b9f03cdULL, 0x8a8e6755f9d82fd1ULL,
+             0x7532834528cd5a64ULL, 0x0b0bcc3fb6f2161cULL, 0x76a2ffcb7d47679dULL,
+             0x25ed2192b203c1feULL}  // c1
+        },
+        false // infinity
+    };
+    return host_gen_standard;
 #endif
 }
 
@@ -2551,6 +2514,11 @@ void point_msm_u64_async_g1(cudaStream_t stream, uint32_t gpu_index, G1Projectiv
         
         // Synchronize stream before copying
         cuda_synchronize_stream(stream, gpu_index);
+        
+        // IMPORTANT: cudaMemcpy uses the default stream, so we must ensure ALL pending operations
+        // on our custom stream are complete before using cudaMemcpy
+        // cudaDeviceSynchronize() ensures all streams on the device are synchronized
+        check_cuda_error(cudaDeviceSynchronize());
         
         // Copy buckets from device to host
         check_cuda_error(cudaMemcpy(h_buckets, d_final_buckets, MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint), cudaMemcpyDeviceToHost));
