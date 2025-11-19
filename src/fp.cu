@@ -35,14 +35,6 @@ __constant__ const uint64_t DEVICE_P_PRIME = 0xcd63fd900035fffdULL;
 // Host-side helper functions removed - values are now hardcoded directly
 // in the accessor functions (fp_modulus, fp_r2, fp_r_inv, fp_p_prime)
 
-// Host function to initialize device constants
-// Constants are now hardcoded at compile time, so this function is a no-op
-// Kept for API compatibility
-void init_device_modulus(cudaStream_t stream, uint32_t gpu_index) {
-    // Constants are hardcoded at compile time, no initialization needed
-    (void)stream;
-    (void)gpu_index;
-}
 
 // Helper to get modulus reference
 // On device: returns DEVICE_MODULUS from constant memory

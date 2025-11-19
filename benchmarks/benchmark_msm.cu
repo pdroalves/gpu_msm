@@ -33,9 +33,7 @@ static void init_benchmark() {
         // Create a CUDA stream using library function
         g_benchmark_stream = cuda_create_stream(g_gpu_index);
         
-        // Initialize device constants
-        init_device_modulus(g_benchmark_stream, g_gpu_index);
-        init_device_curve(g_benchmark_stream, g_gpu_index);
+        // Initialize device generators (converts from standard to Montgomery form)
         init_device_generators(g_benchmark_stream, g_gpu_index);
         
         // Synchronize to ensure initialization completes

@@ -5,11 +5,6 @@
 #include <cstdint>
 #include <cuda_runtime.h>
 
-// Initialize device curve constants
-// Must be called once per device before using curve functions on device
-// stream: CUDA stream to use (can be nullptr for default stream synchronization)
-// gpu_index: GPU device index to use
-void init_device_curve(cudaStream_t stream, uint32_t gpu_index);
 
 // Elliptic curve point structures for BLS12-446
 
@@ -109,7 +104,7 @@ extern __device__ G1Point DEVICE_G1_GENERATOR_MONT;
 extern __device__ G2Point DEVICE_G2_GENERATOR_MONT;
 
 // Initialize device generator points
-// Must be called once per device after init_device_curve()
+// Must be called once per device before using generators in device code
 void init_device_generators(cudaStream_t stream, uint32_t gpu_index);
 
 // Get G1 generator point

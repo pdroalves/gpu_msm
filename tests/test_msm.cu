@@ -22,9 +22,7 @@ protected:
         gpu_index = 0;
         stream = cuda_create_stream(gpu_index);
         
-        // Initialize device modulus and curve
-        init_device_modulus(stream, gpu_index);
-        init_device_curve(stream, gpu_index);
+        // Initialize device generators (converts from standard to Montgomery form)
         init_device_generators(stream, gpu_index);
         
         cuda_synchronize_stream(stream, gpu_index);

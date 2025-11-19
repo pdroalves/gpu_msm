@@ -26,11 +26,6 @@ extern __constant__ const Fp DEVICE_R2;
 extern __constant__ const Fp DEVICE_R_INV;
 extern __constant__ const uint64_t DEVICE_P_PRIME;
 
-// Host-side initialization function
-// Call this once per device before using device code
-// stream: CUDA stream to use (can be nullptr for default stream synchronization)
-// gpu_index: GPU device index to use
-void init_device_modulus(cudaStream_t stream, uint32_t gpu_index);
 
 // Multi-precision arithmetic operations
 // All operations are CUDA-compatible (can be called from host or device)

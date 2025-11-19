@@ -64,8 +64,6 @@ pub struct cudaStream_t {
 
 extern "C" {
     // Device initialization
-    pub fn init_device_modulus(stream: *const cudaStream_t, gpu_index: c_uint);
-    pub fn init_device_curve(stream: *const cudaStream_t, gpu_index: c_uint);
     pub fn init_device_generators(stream: *const cudaStream_t, gpu_index: c_uint);
     
     // Point conversions (using C wrapper functions)

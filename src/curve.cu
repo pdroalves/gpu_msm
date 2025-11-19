@@ -288,15 +288,6 @@ __constant__ const Fp2 DEVICE_CURVE_B_G2 = {
     {4ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL, 0ULL}   // c1 = 4
 };
 
-// Initialize device curve constants
-// Constants are now hardcoded at compile time, so this function is a no-op
-// Kept for API compatibility
-void init_device_curve(cudaStream_t stream, uint32_t gpu_index) {
-    // Constants are hardcoded at compile time, no initialization needed
-    (void)stream;
-    (void)gpu_index;
-}
-
 // Get curve coefficient b for G1
 __host__ __device__ const Fp& curve_b_g1() {
 #ifdef __CUDA_ARCH__
@@ -998,9 +989,9 @@ __global__ void kernel_accumulate_buckets_u64(
     // - thread_points[blockDim.x]: points processed by each thread
     // - thread_buckets[blockDim.x]: bucket index for each thread's point
     extern __shared__ char shared_mem[];
-    PointType* shared_buckets = (PointType*)shared_mem;
-    PointType* thread_points = (PointType*)(shared_mem + MSM_BUCKET_COUNT * sizeof(PointType));
-    int* thread_buckets = (int*)(shared_mem + MSM_BUCKET_COUNT * sizeof(PointType) + blockDim.x * sizeof(PointType));
+    auto* shared_buckets = reinterpret_cast<PointType*>(shared_mem);
+    auto* thread_points = reinterpret_cast<PointType*>(shared_mem + MSM_BUCKET_COUNT * sizeof(PointType));
+    auto* thread_buckets = reinterpret_cast<int*>(shared_mem + MSM_BUCKET_COUNT * sizeof(PointType) + blockDim.x * sizeof(PointType));
     
     // Initialize shared memory buckets to infinity
     for (int i = threadIdx.x; i < MSM_BUCKET_COUNT; i += blockDim.x) {
@@ -1037,7 +1028,7 @@ __global__ void kernel_accumulate_buckets_u64(
     
     // Per-warp buckets: only allocate if we have multiple warps
     size_t warp_buckets_offset = MSM_BUCKET_COUNT * sizeof(PointType) + blockDim.x * sizeof(PointType) + blockDim.x * sizeof(int);
-    PointType* warp_buckets = num_warps > 1 ? (PointType*)(shared_mem + warp_buckets_offset) : nullptr;
+    auto* warp_buckets = num_warps > 1 ? reinterpret_cast<PointType*>(shared_mem + warp_buckets_offset) : nullptr;
     
     if (num_warps > 1 && warp_buckets != nullptr) {
         // Initialize per-warp buckets
@@ -1179,9 +1170,9 @@ __global__ void kernel_accumulate_buckets_u64_projective_g1(
     // - thread_points[blockDim.x]: projective points processed by each thread
     // - thread_buckets[blockDim.x]: bucket index for each thread's point
     extern __shared__ char shared_mem[];
-    G1ProjectivePoint* shared_buckets = (G1ProjectivePoint*)shared_mem;
-    G1ProjectivePoint* thread_points = (G1ProjectivePoint*)(shared_mem + MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint));
-    int* thread_buckets = (int*)(shared_mem + MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint) + blockDim.x * sizeof(G1ProjectivePoint));
+    auto* shared_buckets = reinterpret_cast<G1ProjectivePoint*>(shared_mem);
+    auto* thread_points = reinterpret_cast<G1ProjectivePoint*>(shared_mem + MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint));
+    auto* thread_buckets = reinterpret_cast<int*>(shared_mem + MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint) + blockDim.x * sizeof(G1ProjectivePoint));
     
     // Initialize shared memory buckets to infinity (Z = 0)
     for (int i = threadIdx.x; i < MSM_BUCKET_COUNT; i += blockDim.x) {
@@ -1341,9 +1332,9 @@ __global__ void kernel_accumulate_buckets_u64_projective_g2(
     int window_size
 ) {
     extern __shared__ char shared_mem[];
-    G2ProjectivePoint* shared_buckets = (G2ProjectivePoint*)shared_mem;
-    G2ProjectivePoint* thread_points = (G2ProjectivePoint*)(shared_mem + MSM_BUCKET_COUNT * sizeof(G2ProjectivePoint));
-    int* thread_buckets = (int*)(shared_mem + MSM_BUCKET_COUNT * sizeof(G2ProjectivePoint) + blockDim.x * sizeof(G2ProjectivePoint));
+    auto* shared_buckets = reinterpret_cast<G2ProjectivePoint*>(shared_mem);
+    auto* thread_points = reinterpret_cast<G2ProjectivePoint*>(shared_mem + MSM_BUCKET_COUNT * sizeof(G2ProjectivePoint));
+    auto* thread_buckets = reinterpret_cast<int*>(shared_mem + MSM_BUCKET_COUNT * sizeof(G2ProjectivePoint) + blockDim.x * sizeof(G2ProjectivePoint));
     
     for (int i = threadIdx.x; i < MSM_BUCKET_COUNT; i += blockDim.x) {
         g2_projective_point_at_infinity(shared_buckets[i]);

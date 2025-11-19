@@ -1,8 +1,6 @@
 
 // Temporary test to print generator values
 TEST(CurveTest, PrintGeneratorValues) {
-    init_device_modulus(nullptr, 0);
-    
     // Access via the public function (standard form on host)
     G1Point g1 = g1_generator();
     G2Point g2 = g2_generator();

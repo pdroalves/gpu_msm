@@ -64,7 +64,7 @@ The BLS12-446 Fq modulus is already set from the tfhe-rs reference:
 - **Modulus**: `172824703542857155980071276579495962243492693522789898437834836356385656662277472896902502740297183690175962001546428467344062165330603`
 - **Source**: [tfhe-rs/tfhe-zk-pok/src/curve_446/mod.rs](https://github.com/zama-ai/tfhe-rs/blob/main/tfhe-zk-pok/src/curve_446/mod.rs)
 
-The modulus is automatically initialized for both host and device code. Call `init_device_modulus()` once before using CUDA kernels.
+The modulus and curve constants are automatically initialized for both host and device code (hardcoded at compile time). Call `init_device_generators()` once before using generator points in CUDA kernels.
 
 ## Building and Testing
 

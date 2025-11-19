@@ -4,7 +4,6 @@
 #include <gtest/gtest.h>
 
 TEST(PrintGenerators, GetMontgomeryValues) {
-    init_device_modulus(nullptr, 0);
     init_device_generators(nullptr, 0);
     
     G1Point g1 = g1_generator();

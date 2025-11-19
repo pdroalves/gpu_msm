@@ -1,11 +1,72 @@
 use std::env;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
     // Tell cargo to link against the C++ library
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let project_root = manifest_dir.parent().unwrap();
     let build_dir = project_root.join("build");
+    
+    // Check if c_wrapper.cu is newer than libfp_arithmetic.a
+    // If so, we need to rebuild the CMake project
+    let c_wrapper = manifest_dir.join("src").join("c_wrapper.cu");
+    let lib_file = build_dir.join("libfp_arithmetic.a");
+    
+    let needs_rebuild = if c_wrapper.exists() && lib_file.exists() {
+        let c_wrapper_meta = std::fs::metadata(&c_wrapper).ok();
+        let lib_meta = std::fs::metadata(&lib_file).ok();
+        
+        match (c_wrapper_meta, lib_meta) {
+            (Some(cw_meta), Some(lib_meta)) => {
+                if let (Ok(cw_time), Ok(lib_time)) = (cw_meta.modified(), lib_meta.modified()) {
+                    cw_time > lib_time
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
+    
+    // If c_wrapper.cu is newer, trigger CMake rebuild
+    if needs_rebuild {
+        println!("cargo:warning=c_wrapper.cu is newer than libfp_arithmetic.a, rebuilding CMake project...");
+        // First ensure CMake is configured
+        if !build_dir.join("CMakeCache.txt").exists() {
+            println!("cargo:warning=CMake not configured, running cmake...");
+            let configure_status = Command::new("cmake")
+                .arg("-B")
+                .arg(&build_dir)
+                .arg("-S")
+                .arg(&project_root)
+                .status();
+            if let Ok(s) = configure_status {
+                if !s.success() {
+                    println!("cargo:warning=CMake configuration failed!");
+                }
+            }
+        }
+        
+        let status = Command::new("cmake")
+            .arg("--build")
+            .arg(&build_dir)
+            .arg("--target")
+            .arg("fp_arithmetic")
+            .status();
+        
+        if let Ok(s) = status {
+            if !s.success() {
+                println!("cargo:warning=CMake rebuild failed, but continuing...");
+            } else {
+                println!("cargo:warning=CMake rebuild completed successfully");
+            }
+        } else {
+            println!("cargo:warning=Failed to run cmake --build");
+        }
+    }
     
     // Add CUDA library paths first (before linking our library)
     if let Ok(cuda_path) = env::var("CUDA_PATH") {

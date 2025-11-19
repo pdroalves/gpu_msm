@@ -35,7 +35,6 @@ static void init_benchmark() {
             g_benchmark_stream = nullptr;
         }
         
-        init_device_modulus(g_benchmark_stream, g_gpu_index);
         initialized = true;
     }
 }

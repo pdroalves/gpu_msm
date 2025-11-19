@@ -18,6 +18,13 @@ void* __cudaRegisterLinkedBinary_2c9b6a98_8_curve_cu_5ce60628(void* a, void* b, 
     return (void*)0;
 }
 
+// Updated hash for curve.cu after removing init_device_curve and changing casts
+__attribute__((weak))
+void* __cudaRegisterLinkedBinary_2c9b6a98_8_curve_cu_3d6d16e6(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k) {
+    (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i; (void)j; (void)k;
+    return (void*)0;
+}
+
 __attribute__((weak))
 void* __cudaRegisterLinkedBinary_6f717f17_12_c_wrapper_cu_c2ca44b5(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k) {
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i; (void)j; (void)k;

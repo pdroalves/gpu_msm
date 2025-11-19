@@ -76,6 +76,64 @@ impl G1Affine {
         }
         G1Projective { inner: proj }
     }
+    
+}
+
+impl fmt::Display for G1Affine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_infinity() {
+            write!(f, "Infinity")
+        } else {
+            // Convert from Montgomery to normal form
+            let normal = crate::conversions::g1_affine_from_montgomery(self);
+            
+            let x_str = fp_to_decimal_string(&normal.inner().x.limb);
+            let y_str = fp_to_decimal_string(&normal.inner().y.limb);
+            
+            write!(f, "({}, {})", x_str, y_str)
+        }
+    }
+}
+
+/// Convert an Fp value (represented as limbs) to a decimal string
+/// Assumes the limbs are in normal form (not Montgomery)
+fn fp_to_decimal_string(limbs: &[u64; 7]) -> String {
+    // Check if all limbs are zero
+    if limbs.iter().all(|&x| x == 0) {
+        return "0".to_string();
+    }
+    
+    // Create a working copy
+    let mut working = *limbs;
+    let mut result = String::new();
+    
+    // Repeatedly divide by 10 and collect remainders
+    loop {
+        // Check if all limbs are zero
+        if working.iter().all(|&x| x == 0) {
+            break;
+        }
+        
+        // Divide the big integer by 10 and get remainder
+        // Process from MSB to LSB
+        let mut remainder = 0u64;
+        for i in (0..7).rev() {
+            // Combine remainder with current limb: value = remainder * 2^64 + limbs[i]
+            // Use 128-bit arithmetic
+            let value = ((remainder as u128) << 64) | (working[i] as u128);
+            working[i] = (value / 10) as u64;
+            remainder = (value % 10) as u64;
+        }
+        
+        // The remainder is our digit
+        result = format!("{}{}", remainder, result);
+    }
+    
+    if result.is_empty() {
+        "0".to_string()
+    } else {
+        result
+    }
 }
 
 impl fmt::Debug for G1Affine {
@@ -179,6 +237,28 @@ impl G2Affine {
         }
         G2Projective { inner: proj }
     }
+    
+}
+
+impl fmt::Display for G2Affine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_infinity() {
+            write!(f, "Infinity")
+        } else {
+            // Convert from Montgomery to normal form
+            let normal = crate::conversions::g2_affine_from_montgomery(self);
+            
+            let (x_c0, x_c1) = normal.x();
+            let (y_c0, y_c1) = normal.y();
+            
+            let x_c0_str = fp_to_decimal_string(&x_c0);
+            let x_c1_str = fp_to_decimal_string(&x_c1);
+            let y_c0_str = fp_to_decimal_string(&y_c0);
+            let y_c1_str = fp_to_decimal_string(&y_c1);
+            
+            write!(f, "(x: ({}, {}), y: ({}, {}))", x_c0_str, x_c1_str, y_c0_str, y_c1_str)
+        }
+    }
 }
 
 impl fmt::Debug for G2Affine {
@@ -271,7 +351,6 @@ impl G1Projective {
         if points.is_empty() {
             return Ok(Self::infinity());
         }
-        
         let n = points.len() as i32;
         let points_ffi: Vec<G1Point> = points.iter().map(|p| p.inner).collect();
         let mut result = G1ProjectivePoint {
@@ -279,7 +358,7 @@ impl G1Projective {
             Y: Fp { limb: [0; 7] },
             Z: Fp { limb: [0; 7] },
         };
-        
+        println!("points: {:?}", points);
         let ret = unsafe {
             crate::ffi::g1_msm_wrapper(
                 &mut result,
@@ -295,6 +374,14 @@ impl G1Projective {
         }
         
         Ok(Self { inner: result })
+    }
+}
+
+impl fmt::Display for G1Projective {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Convert to affine for display
+        let affine = self.to_affine();
+        write!(f, "{}", affine)
     }
 }
 
@@ -443,6 +530,14 @@ impl G2Projective {
         }
         
         Ok(Self { inner: result })
+    }
+}
+
+impl fmt::Display for G2Projective {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Convert to affine for display
+        let affine = self.to_affine();
+        write!(f, "{}", affine)
     }
 }
 

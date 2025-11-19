@@ -101,34 +101,29 @@ mod tests {
         let tfhe_g1_gen = TfheZkPokG1Affine::generator();
         let g1_gen = g1_affine_from_tfhe_zk_pok(&tfhe_g1_gen);
         
-        let g1_x = g1_gen.x();
         eprintln!("tfhe-zk-pok generator (extracted via our conversion - normal form):");
-        eprintln!("  x[0] = {:#x}", g1_x[0]);
-        eprintln!("  x[1] = {:#x}", g1_x[1]);
-        eprintln!("  x[2] = {:#x}", g1_x[2]);
-        eprintln!("  x[3] = {:#x}", g1_x[3]);
-        eprintln!("  x[4] = {:#x}", g1_x[4]);
-        eprintln!("  x[5] = {:#x}", g1_x[5]);
-        eprintln!("  x[6] = {:#x}", g1_x[6]);
+        eprintln!("  {}", g1_gen);
         
-        // CRITICAL CHECK: Our hardcoded generator values are now stored in STANDARD form
-        // Convert the tfhe generator to Montgomery to ensure it matches the runtime conversion
-        use crate::ffi::Fp;
-        unsafe {
-            let mut x_mont = Fp { limb: [0; 7] };
-            let mut y_mont = Fp { limb: [0; 7] };
-            crate::ffi::fp_to_montgomery_wrapper(&mut x_mont, &g1_gen.inner().x);
-            crate::ffi::fp_to_montgomery_wrapper(&mut y_mont, &g1_gen.inner().y);
-            eprintln!("tfhe-zk-pok generator CONVERTED to Montgomery form:");
-            eprintln!("  x[0] = {:#x}", x_mont.limb[0]);
-            eprintln!("  y[0] = {:#x}", y_mont.limb[0]);
-        }
+        // // CRITICAL CHECK: Our hardcoded generator values are now stored in STANDARD form
+        // // Convert the tfhe generator to Montgomery to ensure it matches the runtime conversion
+        // use crate::ffi::Fp;
+        // unsafe {
+        //     let mut x_mont = Fp { limb: [0; 7] };
+        //     let mut y_mont = Fp { limb: [0; 7] };
+        //     crate::ffi::fp_to_montgomery_wrapper(&mut x_mont, &g1_gen.inner().x);
+        //     crate::ffi::fp_to_montgomery_wrapper(&mut y_mont, &g1_gen.inner().y);
+        //     let g1_gen_mont = G1Affine::new(x_mont.limb, y_mont.limb, false);
+        //     eprintln!("tfhe-zk-pok generator CONVERTED to Montgomery form:");
+        //     eprintln!("  {}", g1_gen_mont);
+        // }
         
         // Create test data: scalar=1 should return generator
         eprintln!("\n=== Testing with scalar 1 (should return generator) ===");
         let _n = 1;
         let points: Vec<G1Affine> = vec![g1_gen];
         let scalars: Vec<u64> = vec![1];
+
+        println!("points: [{}]", points.iter().map(|p| format!("{}", p)).collect::<Vec<_>>().join(", "));
         
         // Compute MSM using our CUDA implementation
         let gpu_index = 0;
@@ -141,33 +136,21 @@ mod tests {
                 return;
             }
         };
+
+        println!("Out result (projective): {:?}", our_result_proj);
         
         // Convert projective to affine
         // Note: projective_to_affine_g1 uses fp_mont_mul internally, which means
         // the affine result is STILL in Montgomery form
         let our_result_mont = our_result_proj.to_affine();
-        let our_x_mont = our_result_mont.x();
-        eprintln!("Our result (affine, Montgomery form - ALL limbs):");
-        eprintln!("  x[0] = {:#x}", our_x_mont[0]);
-        eprintln!("  x[1] = {:#x}", our_x_mont[1]);
-        eprintln!("  x[2] = {:#x}", our_x_mont[2]);
-        eprintln!("  x[3] = {:#x}", our_x_mont[3]);
-        eprintln!("  x[4] = {:#x}", our_x_mont[4]);
-        eprintln!("  x[5] = {:#x}", our_x_mont[5]);
-        eprintln!("  x[6] = {:#x}", our_x_mont[6]);
+        eprintln!("Our result (affine, Montgomery form):");
+        eprintln!("  {}", our_result_mont);
         
         // arkworks `into_bigint()` returns NORMAL form (as we can see from the generator)
         // So we need to convert our Montgomery result to normal form
         let our_result = super::super::conversions::g1_affine_from_montgomery(&our_result_mont);
-        let our_x_normal = our_result.x();
-        eprintln!("Our result (affine, NORMAL form - ALL limbs):");
-        eprintln!("  x[0] = {:#x}", our_x_normal[0]);
-        eprintln!("  x[1] = {:#x}", our_x_normal[1]);
-        eprintln!("  x[2] = {:#x}", our_x_normal[2]);
-        eprintln!("  x[3] = {:#x}", our_x_normal[3]);
-        eprintln!("  x[4] = {:#x}", our_x_normal[4]);
-        eprintln!("  x[5] = {:#x}", our_x_normal[5]);
-        eprintln!("  x[6] = {:#x}", our_x_normal[6]);
+        eprintln!("Our result (affine, NORMAL form):");
+        eprintln!("  {}", our_result);
         
         // Check if result is at infinity
         if our_result.is_infinity() {
@@ -175,6 +158,9 @@ mod tests {
             eprintln!("This might indicate an error in the computation");
             eprintln!("Points: {:?}", points.len());
             eprintln!("Scalars: {:?}", scalars);
+            eprintln!("Our result: {}", our_result);
+        } else {
+            eprintln!("Our MSM result: {}", our_result);
         }
         
         // Compute MSM using tfhe-zk-pok
@@ -203,17 +189,10 @@ mod tests {
         
         // Convert tfhe-zk-pok result to our format
         let tfhe_result_ours = g1_affine_from_tfhe_zk_pok(&tfhe_result);
-        let x = tfhe_result_ours.x();
-        let y = tfhe_result_ours.y();
-        eprintln!("tfhe-zk-pok result (our format - ALL limbs):");
-        eprintln!("  x[0] = {:#x}", x[0]);
-        eprintln!("  x[1] = {:#x}", x[1]);
-        eprintln!("  x[2] = {:#x}", x[2]);
-        eprintln!("  x[3] = {:#x}", x[3]);
-        eprintln!("  x[4] = {:#x}", x[4]);
-        eprintln!("  x[5] = {:#x}", x[5]);
-        eprintln!("  x[6] = {:#x}", x[6]);
-        eprintln!("  y[0] = {:#x}", y[0]);
+        
+        eprintln!("\n=== Results Comparison ===");
+        eprintln!("Our MSM result: {}", our_result);
+        eprintln!("tfhe-zk-pok MSM result: {}", tfhe_result_ours);
         
         // Compare results
         assert_eq!(our_result.x(), tfhe_result_ours.x(), "G1 MSM x coordinate mismatch");

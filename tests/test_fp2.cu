@@ -94,10 +94,6 @@ protected:
         stream = cuda_create_stream(gpu_index);
         PANIC_IF_FALSE(stream != nullptr, "Failed to create CUDA stream");
         
-        // Initialize device modulus once for all tests
-        init_device_modulus(stream, gpu_index);
-        // Initialize device curve constants
-        init_device_curve(stream, gpu_index);
     }
     
     static void TearDownTestSuite() {
