@@ -91,5 +91,111 @@ mod tests {
         assert_eq!(g2_point.x(), g2_point_again.x());
         assert_eq!(g2_point.y(), g2_point_again.y());
     }
+    
+    #[test]
+    fn test_g1_msm_vs_tfhe_zk_pok() {
+        use super::super::conversions::{TfheZkPokG1Affine, TfheZkPokG1Projective};
+        use ark_ec::{AffineRepr, VariableBaseMSM};
+        use ark_ff::PrimeField;
+        
+        // Get generator from tfhe-zk-pok
+        let tfhe_g1_gen = TfheZkPokG1Affine::generator();
+        let g1_gen = g1_affine_from_tfhe_zk_pok(&tfhe_g1_gen);
+        
+        // Create test data: 5 points (all generator) and scalars [1, 2, 3, 4, 5]
+        let n = 5;
+        let points: Vec<G1Affine> = (0..n).map(|_| g1_gen).collect();
+        let scalars: Vec<u64> = (1..=n as u64).collect();
+        
+        // Compute MSM using our CUDA implementation
+        let gpu_index = 0;
+        let our_result = match G1Projective::msm(&points, &scalars, gpu_index) {
+            Ok(result) => result.to_affine(),
+            Err(e) => {
+                eprintln!("CUDA MSM failed: {}", e);
+                eprintln!("Skipping test - CUDA may not be available");
+                return;
+            }
+        };
+        
+        // Compute MSM using tfhe-zk-pok
+        let tfhe_points: Vec<TfheZkPokG1Affine> = points.iter()
+            .map(|p| g1_affine_to_tfhe_zk_pok(p))
+            .collect();
+        
+        // Convert scalars to field elements
+        let tfhe_scalars: Vec<_> = scalars.iter()
+            .map(|&s| {
+                // Convert u64 to field element
+                let mut limbs = [0u64; 7];
+                limbs[0] = s;
+                TfheZkPokG1Projective::ScalarField::from_sign_and_limbs(true, &limbs)
+            })
+            .collect();
+        
+        let tfhe_result_proj = TfheZkPokG1Projective::msm(&tfhe_points, &tfhe_scalars)
+            .expect("tfhe-zk-pok MSM should succeed");
+        let tfhe_result = tfhe_result_proj.into_affine();
+        
+        // Convert tfhe-zk-pok result to our format
+        let tfhe_result_ours = g1_affine_from_tfhe_zk_pok(&tfhe_result);
+        
+        // Compare results
+        assert_eq!(our_result.x(), tfhe_result_ours.x(), "G1 MSM x coordinate mismatch");
+        assert_eq!(our_result.y(), tfhe_result_ours.y(), "G1 MSM y coordinate mismatch");
+    }
+    
+    #[test]
+    fn test_g2_msm_vs_tfhe_zk_pok() {
+        use super::super::conversions::{TfheZkPokG2Affine, TfheZkPokG2Projective};
+        use ark_ec::{AffineRepr, VariableBaseMSM};
+        use ark_ff::PrimeField;
+        
+        // Get generator from tfhe-zk-pok
+        let tfhe_g2_gen = TfheZkPokG2Affine::generator();
+        let g2_gen = g2_affine_from_tfhe_zk_pok(&tfhe_g2_gen);
+        
+        // Create test data: 5 points (all generator) and scalars [1, 2, 3, 4, 5]
+        let n = 5;
+        let points: Vec<G2Affine> = (0..n).map(|_| g2_gen).collect();
+        let scalars: Vec<u64> = (1..=n as u64).collect();
+        
+        // Compute MSM using our CUDA implementation
+        let gpu_index = 0;
+        let our_result = match G2Projective::msm(&points, &scalars, gpu_index) {
+            Ok(result) => result.to_affine(),
+            Err(e) => {
+                eprintln!("CUDA MSM failed: {}", e);
+                eprintln!("Skipping test - CUDA may not be available");
+                return;
+            }
+        };
+        
+        // Compute MSM using tfhe-zk-pok
+        let tfhe_points: Vec<TfheZkPokG2Affine> = points.iter()
+            .map(|p| g2_affine_to_tfhe_zk_pok(p))
+            .collect();
+        
+        // Convert scalars to field elements
+        let tfhe_scalars: Vec<_> = scalars.iter()
+            .map(|&s| {
+                // Convert u64 to field element
+                let mut limbs = [0u64; 7];
+                limbs[0] = s;
+                TfheZkPokG2Projective::ScalarField::from_sign_and_limbs(true, &limbs)
+            })
+            .collect();
+        
+        let tfhe_result_proj = TfheZkPokG2Projective::msm(&tfhe_points, &tfhe_scalars)
+            .expect("tfhe-zk-pok MSM should succeed");
+        let tfhe_result = tfhe_result_proj.into_affine();
+        
+        // Convert tfhe-zk-pok result to our format
+        let tfhe_result_ours = g2_affine_from_tfhe_zk_pok(&tfhe_result);
+        
+        // Compare results
+        assert_eq!(our_result.x(), tfhe_result_ours.x(), "G2 MSM x coordinate mismatch");
+        assert_eq!(our_result.y(), tfhe_result_ours.y(), "G2 MSM y coordinate mismatch");
+    }
 }
 

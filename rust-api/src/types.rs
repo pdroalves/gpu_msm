@@ -261,6 +261,41 @@ impl G1Projective {
         }
         G1Affine { inner: affine }
     }
+    
+    /// Compute multi-scalar multiplication: result = sum(scalars[i] * points[i])
+    /// Returns an error if MSM computation fails
+    pub fn msm(points: &[G1Affine], scalars: &[u64], gpu_index: u32) -> Result<Self, String> {
+        if points.len() != scalars.len() {
+            return Err(format!("Points and scalars must have the same length: {} != {}", points.len(), scalars.len()));
+        }
+        if points.is_empty() {
+            return Ok(Self::infinity());
+        }
+        
+        let n = points.len() as i32;
+        let points_ffi: Vec<G1Point> = points.iter().map(|p| p.inner).collect();
+        let mut result = G1ProjectivePoint {
+            X: Fp { limb: [0; 7] },
+            Y: Fp { limb: [0; 7] },
+            Z: Fp { limb: [0; 7] },
+        };
+        
+        let ret = unsafe {
+            crate::ffi::g1_msm_wrapper(
+                &mut result,
+                points_ffi.as_ptr(),
+                scalars.as_ptr(),
+                n,
+                gpu_index,
+            )
+        };
+        
+        if ret != 0 {
+            return Err(format!("MSM computation failed with error code: {}", ret));
+        }
+        
+        Ok(Self { inner: result })
+    }
 }
 
 impl fmt::Debug for G1Projective {
@@ -364,6 +399,50 @@ impl G2Projective {
             crate::ffi::projective_to_affine_g2_wrapper(&mut affine, &self.inner);
         }
         G2Affine { inner: affine }
+    }
+    
+    /// Compute multi-scalar multiplication: result = sum(scalars[i] * points[i])
+    /// Returns an error if MSM computation fails
+    pub fn msm(points: &[G2Affine], scalars: &[u64], gpu_index: u32) -> Result<Self, String> {
+        if points.len() != scalars.len() {
+            return Err(format!("Points and scalars must have the same length: {} != {}", points.len(), scalars.len()));
+        }
+        if points.is_empty() {
+            return Ok(Self::infinity());
+        }
+        
+        let n = points.len() as i32;
+        let points_ffi: Vec<G2Point> = points.iter().map(|p| p.inner).collect();
+        let mut result = G2ProjectivePoint {
+            X: Fp2 {
+                c0: Fp { limb: [0; 7] },
+                c1: Fp { limb: [0; 7] },
+            },
+            Y: Fp2 {
+                c0: Fp { limb: [0; 7] },
+                c1: Fp { limb: [0; 7] },
+            },
+            Z: Fp2 {
+                c0: Fp { limb: [0; 7] },
+                c1: Fp { limb: [0; 7] },
+            },
+        };
+        
+        let ret = unsafe {
+            crate::ffi::g2_msm_wrapper(
+                &mut result,
+                points_ffi.as_ptr(),
+                scalars.as_ptr(),
+                n,
+                gpu_index,
+            )
+        };
+        
+        if ret != 0 {
+            return Err(format!("MSM computation failed with error code: {}", ret));
+        }
+        
+        Ok(Self { inner: result })
     }
 }
 

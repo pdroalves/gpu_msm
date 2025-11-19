@@ -83,5 +83,22 @@ extern "C" {
     // Infinity checks (using wrapper functions with C linkage)
     pub fn g1_is_infinity_wrapper(point: *const G1Point) -> bool;
     pub fn g2_is_infinity_wrapper(point: *const G2Point) -> bool;
+    
+    // MSM functions
+    pub fn g1_msm_wrapper(
+        result: *mut G1ProjectivePoint,
+        points: *const G1Point,
+        scalars: *const u64,
+        n: std::os::raw::c_int,
+        gpu_index: c_uint,
+    ) -> std::os::raw::c_int;
+    
+    pub fn g2_msm_wrapper(
+        result: *mut G2ProjectivePoint,
+        points: *const G2Point,
+        scalars: *const u64,
+        n: std::os::raw::c_int,
+        gpu_index: c_uint,
+    ) -> std::os::raw::c_int;
 }
 
