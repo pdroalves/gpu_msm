@@ -213,3 +213,33 @@ message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "CUDA standard: ${CMAKE_CUDA_STANDARD}")
 message(STATUS "DEBUG flag: ${DEBUG}")
+
+# Simple projective test
+add_executable(test_projective_simple
+    test_projective_simple.cu
+)
+
+target_link_libraries(test_projective_simple
+    fp_arithmetic
+    ${CUDA_LIBRARIES}
+)
+
+# MSM simple test
+add_executable(test_msm_simple
+    test_msm_simple.cu
+)
+
+target_link_libraries(test_msm_simple
+    fp_arithmetic
+    ${CUDA_LIBRARIES}
+)
+
+# Test doubling with Z != 1
+add_executable(test_double_z
+    test_double_z.cu
+)
+
+target_link_libraries(test_double_z
+    fp_arithmetic
+    ${CUDA_LIBRARIES}
+)

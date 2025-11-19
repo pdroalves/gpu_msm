@@ -142,21 +142,21 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
         GTEST_SKIP() << "G1 generator not set - please provide generator points from tfhe-rs";
     }
     
-    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT (projective points)
     int threadsPerBlock = 256;
     int num_blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
-    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1Point);
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint);
     
     // Allocate device memory for points and scalars
     G1Point* d_points = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
-    G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    G1Point* d_scratch = (G1Point*)cuda_malloc_async(scratch_size, stream, gpu_index);
+    G1ProjectivePoint* d_result = (G1ProjectivePoint*)cuda_malloc_async(sizeof(G1ProjectivePoint), stream, gpu_index);
+    G1ProjectivePoint* d_scratch = (G1ProjectivePoint*)cuda_malloc_async(scratch_size, stream, gpu_index);
     G1Point* d_expected = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     
     // Initialize allocated memory to zero to avoid uninitialized access warnings
-    cuda_memset_async(d_result, 0, sizeof(G1Point), stream, gpu_index);
+    cuda_memset_async(d_result, 0, sizeof(G1ProjectivePoint), stream, gpu_index);
     cuda_memset_async(d_expected, 0, sizeof(G1Point), stream, gpu_index);
     cuda_memset_async(d_G, 0, sizeof(G1Point), stream, gpu_index);
     
@@ -192,29 +192,40 @@ TEST_F(MSMTest, G1MSMWithGenerator) {
     // Copy generator to device (generator is already in Montgomery form from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
     
-    // Compute MSM on device
-    point_msm_u64<G1Point>(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    // Compute MSM on device (returns projective point)
+    point_msm_u64_g1(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
     
     // Compute expected result on device: G * (N * (N+1) / 2)
     uint64_t expected_scalar = triangular_number(N);
     point_scalar_mul_u64<G1Point>(stream, gpu_index, d_expected, d_G, expected_scalar);
     
-    // Convert results back from Montgomery form before comparing
-    G1Point* d_result_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    // Convert projective result to affine, then from Montgomery form before comparing
+    G1ProjectivePoint* d_result_proj = d_result;
+    G1Point* d_result_affine = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_expected_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    point_from_montgomery<G1Point>(stream, gpu_index, d_result_normal, d_result);
+    
+    // Convert projective to affine on device
+    cuda_synchronize_stream(stream, gpu_index);
+    G1ProjectivePoint h_result_proj;
+    cuda_memcpy_async_to_cpu(&h_result_proj, d_result_proj, sizeof(G1ProjectivePoint), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
+    G1Point h_result_affine;
+    projective_to_affine_g1(h_result_affine, h_result_proj);
+    cuda_memcpy_async_to_gpu(d_result_affine, &h_result_affine, sizeof(G1Point), stream, gpu_index);
+    
+    point_from_montgomery<G1Point>(stream, gpu_index, d_result_affine, d_result_affine);
     point_from_montgomery<G1Point>(stream, gpu_index, d_expected_normal, d_expected);
     
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);
     G1Point msm_result;
     G1Point expected_result;
-    cuda_memcpy_async_to_cpu(&msm_result, d_result_normal, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result_affine, sizeof(G1Point), stream, gpu_index);
     cuda_memcpy_async_to_cpu(&expected_result, d_expected_normal, sizeof(G1Point), stream, gpu_index);
     cuda_synchronize_stream(stream, gpu_index);
     
     // Cleanup
-    cuda_drop_async(d_result_normal, stream, gpu_index);
+    cuda_drop_async(d_result_affine, stream, gpu_index);
     cuda_drop_async(d_expected_normal, stream, gpu_index);
     
     // Compare results
@@ -369,21 +380,21 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
         GTEST_SKIP() << "G2 generator not set - please provide generator points from tfhe-rs";
     }
     
-    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT (projective points)
     int threadsPerBlock = 128;
     int num_blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
-    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G2Point);
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G2ProjectivePoint);
     
     // Allocate device memory
     G2Point* d_points = (G2Point*)cuda_malloc_async(N * sizeof(G2Point), stream, gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
-    G2Point* d_result = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
-    G2Point* d_scratch = (G2Point*)cuda_malloc_async(scratch_size, stream, gpu_index);
+    G2ProjectivePoint* d_result = (G2ProjectivePoint*)cuda_malloc_async(sizeof(G2ProjectivePoint), stream, gpu_index);
+    G2ProjectivePoint* d_scratch = (G2ProjectivePoint*)cuda_malloc_async(scratch_size, stream, gpu_index);
     G2Point* d_expected = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
     G2Point* d_G = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
     
     // Initialize allocated memory to zero to avoid uninitialized access warnings
-    cuda_memset_async(d_result, 0, sizeof(G2Point), stream, gpu_index);
+    cuda_memset_async(d_result, 0, sizeof(G2ProjectivePoint), stream, gpu_index);
     cuda_memset_async(d_expected, 0, sizeof(G2Point), stream, gpu_index);
     cuda_memset_async(d_G, 0, sizeof(G2Point), stream, gpu_index);
     
@@ -421,29 +432,40 @@ TEST_F(MSMTest, G2MSMWithGenerator) {
     // Copy generator to device (generator is already in Montgomery form from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G2Point), stream, gpu_index);
     
-    // Compute MSM on device
-    point_msm_u64<G2Point>(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    // Compute MSM on device (returns projective point)
+    point_msm_u64_g2(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
     
     // Compute expected result on device: G * (N * (N+1) / 2)
     uint64_t expected_scalar = triangular_number(N);
     point_scalar_mul_u64<G2Point>(stream, gpu_index, d_expected, d_G, expected_scalar);
     
-    // Convert results back from Montgomery form before comparing
-    G2Point* d_result_normal = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
+    // Convert projective result to affine, then from Montgomery form before comparing
+    G2ProjectivePoint* d_result_proj = d_result;
+    G2Point* d_result_affine = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
     G2Point* d_expected_normal = (G2Point*)cuda_malloc_async(sizeof(G2Point), stream, gpu_index);
-    point_from_montgomery<G2Point>(stream, gpu_index, d_result_normal, d_result);
+    
+    // Convert projective to affine on device
+    cuda_synchronize_stream(stream, gpu_index);
+    G2ProjectivePoint h_result_proj;
+    cuda_memcpy_async_to_cpu(&h_result_proj, d_result_proj, sizeof(G2ProjectivePoint), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
+    G2Point h_result_affine;
+    projective_to_affine_g2(h_result_affine, h_result_proj);
+    cuda_memcpy_async_to_gpu(d_result_affine, &h_result_affine, sizeof(G2Point), stream, gpu_index);
+    
+    point_from_montgomery<G2Point>(stream, gpu_index, d_result_affine, d_result_affine);
     point_from_montgomery<G2Point>(stream, gpu_index, d_expected_normal, d_expected);
     
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);
     G2Point msm_result;
     G2Point expected_result;
-    cuda_memcpy_async_to_cpu(&msm_result, d_result_normal, sizeof(G2Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result_affine, sizeof(G2Point), stream, gpu_index);
     cuda_memcpy_async_to_cpu(&expected_result, d_expected_normal, sizeof(G2Point), stream, gpu_index);
     cuda_synchronize_stream(stream, gpu_index);
     
     // Cleanup
-    cuda_drop_async(d_result_normal, stream, gpu_index);
+    cuda_drop_async(d_result_affine, stream, gpu_index);
     cuda_drop_async(d_expected_normal, stream, gpu_index);
     
     // Compare results
@@ -475,16 +497,16 @@ TEST_F(MSMTest, G1MSMLargeN) {
         GTEST_SKIP() << "G1 generator not set";
     }
     
-    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT
+    // Calculate required scratch space: (num_blocks + 1) * MSM_BUCKET_COUNT (projective points)
     int threadsPerBlock = 256;
     int num_blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
-    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1Point);
+    size_t scratch_size = (num_blocks + 1) * MSM_BUCKET_COUNT * sizeof(G1ProjectivePoint);
     
     // Allocate device memory
     G1Point* d_points = (G1Point*)cuda_malloc_async(N * sizeof(G1Point), stream, gpu_index);
     uint64_t* d_scalars = (uint64_t*)cuda_malloc_async(N * sizeof(uint64_t), stream, gpu_index);
-    G1Point* d_result = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    G1Point* d_scratch = (G1Point*)cuda_malloc_async(scratch_size, stream, gpu_index);
+    G1ProjectivePoint* d_result = (G1ProjectivePoint*)cuda_malloc_async(sizeof(G1ProjectivePoint), stream, gpu_index);
+    G1ProjectivePoint* d_scratch = (G1ProjectivePoint*)cuda_malloc_async(scratch_size, stream, gpu_index);
     G1Point* d_expected = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_G = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     
@@ -520,29 +542,39 @@ TEST_F(MSMTest, G1MSMLargeN) {
     // Copy generator to device (generator is already in Montgomery from host)
     cuda_memcpy_async_to_gpu(d_G, &G, sizeof(G1Point), stream, gpu_index);
     
-    // Compute MSM on device
-    point_msm_u64<G1Point>(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
+    // Compute MSM on device (returns projective point)
+    point_msm_u64_g1(stream, gpu_index, d_result, d_points, d_scalars, d_scratch, N);
     
     // Compute expected result on device
     uint64_t expected_scalar = triangular_number(N);
     point_scalar_mul_u64<G1Point>(stream, gpu_index, d_expected, d_G, expected_scalar);
     
-    // Convert results back from Montgomery form before comparing
-    G1Point* d_result_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
+    // Convert projective result to affine, then from Montgomery form before comparing
+    G1Point* d_result_affine = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
     G1Point* d_expected_normal = (G1Point*)cuda_malloc_async(sizeof(G1Point), stream, gpu_index);
-    point_from_montgomery<G1Point>(stream, gpu_index, d_result_normal, d_result);
+    
+    // Convert projective to affine on host
+    cuda_synchronize_stream(stream, gpu_index);
+    G1ProjectivePoint h_result_proj;
+    cuda_memcpy_async_to_cpu(&h_result_proj, d_result, sizeof(G1ProjectivePoint), stream, gpu_index);
+    cuda_synchronize_stream(stream, gpu_index);
+    G1Point h_result_affine;
+    projective_to_affine_g1(h_result_affine, h_result_proj);
+    cuda_memcpy_async_to_gpu(d_result_affine, &h_result_affine, sizeof(G1Point), stream, gpu_index);
+    
+    point_from_montgomery<G1Point>(stream, gpu_index, d_result_affine, d_result_affine);
     point_from_montgomery<G1Point>(stream, gpu_index, d_expected_normal, d_expected);
     
     // Synchronize and copy results back
     cuda_synchronize_stream(stream, gpu_index);
     G1Point msm_result;
     G1Point expected_result;
-    cuda_memcpy_async_to_cpu(&msm_result, d_result_normal, sizeof(G1Point), stream, gpu_index);
+    cuda_memcpy_async_to_cpu(&msm_result, d_result_affine, sizeof(G1Point), stream, gpu_index);
     cuda_memcpy_async_to_cpu(&expected_result, d_expected_normal, sizeof(G1Point), stream, gpu_index);
     cuda_synchronize_stream(stream, gpu_index);
     
     // Cleanup
-    cuda_drop_async(d_result_normal, stream, gpu_index);
+    cuda_drop_async(d_result_affine, stream, gpu_index);
     cuda_drop_async(d_expected_normal, stream, gpu_index);
     cuda_synchronize_stream(stream, gpu_index);
     

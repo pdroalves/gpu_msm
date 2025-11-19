@@ -116,6 +116,26 @@ __host__ __device__ const G1Point& g1_generator();
 // Get G2 generator point
 __host__ __device__ const G2Point& g2_generator();
 
+// Set projective point to infinity (Z = 0)
+__host__ __device__ void g1_projective_point_at_infinity(G1ProjectivePoint& p);
+__host__ __device__ void g2_projective_point_at_infinity(G2ProjectivePoint& p);
+
+// Convert affine point to projective: (x, y) -> (X, Y, Z) where X=x, Y=y, Z=1
+__host__ __device__ void affine_to_projective(G1ProjectivePoint& proj, const G1Point& affine);
+__host__ __device__ void affine_to_projective(G2ProjectivePoint& proj, const G2Point& affine);
+
+// Convert projective point to affine: (X, Y, Z) -> (x, y) where x = X/Z, y = Y/Z
+__host__ __device__ void projective_to_affine_g1(G1Point& affine, const G1ProjectivePoint& proj);
+__host__ __device__ void projective_to_affine_g2(G2Point& affine, const G2ProjectivePoint& proj);
+
+// Projective point addition: result = p1 + p2 (no inversions)
+__host__ __device__ void projective_point_add(G1ProjectivePoint& result, const G1ProjectivePoint& p1, const G1ProjectivePoint& p2);
+__host__ __device__ void projective_point_add(G2ProjectivePoint& result, const G2ProjectivePoint& p1, const G2ProjectivePoint& p2);
+
+// Projective point doubling: result = 2 * p (no inversions)
+__host__ __device__ void projective_point_double(G1ProjectivePoint& result, const G1ProjectivePoint& p);
+__host__ __device__ void projective_point_double(G2ProjectivePoint& result, const G2ProjectivePoint& p);
+
 // Multi-Scalar Multiplication (MSM)
 // Computes: result = sum(scalars[i] * points[i]) for i = 0 to n-1
 // Uses Pippenger's algorithm (bucket method) for efficiency
@@ -209,10 +229,13 @@ void point_to_montgomery_batch(cudaStream_t stream, uint32_t gpu_index, PointTyp
 // Template MSM functions (work for both G1 and G2)
 
 // MSM with 64-bit scalars
-template<typename PointType>
-void point_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, PointType* d_result, const PointType* d_points, const uint64_t* d_scalars, PointType* d_scratch, int n);
-template<typename PointType>
-void point_msm_u64(cudaStream_t stream, uint32_t gpu_index, PointType* d_result, const PointType* d_points, const uint64_t* d_scalars, PointType* d_scratch, int n);
+// Input: affine points, Output: projective points
+// For G1: takes G1Point*, outputs G1ProjectivePoint*
+// For G2: takes G2Point*, outputs G2ProjectivePoint*
+void point_msm_u64_async_g1(cudaStream_t stream, uint32_t gpu_index, G1ProjectivePoint* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1ProjectivePoint* d_scratch, int n);
+void point_msm_u64_g1(cudaStream_t stream, uint32_t gpu_index, G1ProjectivePoint* d_result, const G1Point* d_points, const uint64_t* d_scalars, G1ProjectivePoint* d_scratch, int n);
+void point_msm_u64_async_g2(cudaStream_t stream, uint32_t gpu_index, G2ProjectivePoint* d_result, const G2Point* d_points, const uint64_t* d_scalars, G2ProjectivePoint* d_scratch, int n);
+void point_msm_u64_g2(cudaStream_t stream, uint32_t gpu_index, G2ProjectivePoint* d_result, const G2Point* d_points, const uint64_t* d_scalars, G2ProjectivePoint* d_scratch, int n);
 
 // MSM with multi-limb scalars
 template<typename PointType>
