@@ -29,6 +29,24 @@ struct G2Point {
     bool infinity;  // true if point at infinity (identity element)
 };
 
+// Projective point structures for efficient MSM (no inversions during accumulation)
+// Projective coordinates: (X, Y, Z) represents affine point (X/Z, Y/Z)
+// Point at infinity is represented as Z = 0
+
+// G1 projective point: (X, Y, Z) in Fp
+struct G1ProjectivePoint {
+    Fp X;
+    Fp Y;
+    Fp Z;
+};
+
+// G2 projective point: (X, Y, Z) in Fp2
+struct G2ProjectivePoint {
+    Fp2 X;
+    Fp2 Y;
+    Fp2 Z;
+};
+
 // Curve parameters for BLS12-446
 // These are constants that define the curve equation
 

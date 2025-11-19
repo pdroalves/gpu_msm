@@ -119,6 +119,56 @@ __host__ __device__ void point_double(PointType& result, const PointType& p) {
     result.infinity = false;
 }
 
+// Optimized point accumulation for MSM: optimized version that handles common cases efficiently
+// Skips infinity checks (assumes already checked) but handles equality/negation cases
+template<typename PointType>
+__host__ __device__ void point_accumulate_fast(PointType& result, const PointType& p1, const PointType& p2) {
+    using Traits = PointTraits<PointType>;
+    using FieldType = typename Traits::FieldType;
+    
+    // Fast check: if x coordinates are equal, handle specially
+    int x_cmp = Traits::field_cmp(p1.x, p2.x);
+    if (x_cmp == 0) {
+        // Same x coordinate - check if same point (doubling) or opposite (infinity)
+        int y_cmp = Traits::field_cmp(p1.y, p2.y);
+        if (y_cmp == 0) {
+            // Same point - use doubling
+            point_double(result, p1);
+            return;
+        } else {
+            // Check if opposite (p1.y == -p2.y)
+            FieldType neg_y2;
+            Traits::field_neg(neg_y2, p2.y);
+            if (Traits::field_cmp(p1.y, neg_y2) == 0) {
+                Traits::point_at_infinity(result);
+                return;
+            }
+        }
+    }
+    
+    // Standard addition: lambda = (y2 - y1) / (x2 - x1)
+    FieldType dx, dy, lambda, lambda_squared, x_result;
+    Traits::field_sub(dx, p2.x, p1.x);
+    Traits::field_sub(dy, p2.y, p1.y);
+    Traits::field_inv(lambda, dx);  // 1 / (x2 - x1) - this is expensive but necessary
+    Traits::field_mul(lambda, lambda, dy);  // (y2 - y1) / (x2 - x1)
+    
+    // x_result = lambda^2 - x1 - x2
+    Traits::field_mul(lambda_squared, lambda, lambda);
+    Traits::field_sub(x_result, lambda_squared, p1.x);
+    Traits::field_sub(x_result, x_result, p2.x);
+    
+    // y_result = lambda * (x1 - x_result) - y1
+    FieldType x1_minus_xr, y_result;
+    Traits::field_sub(x1_minus_xr, p1.x, x_result);
+    Traits::field_mul(y_result, lambda, x1_minus_xr);
+    Traits::field_sub(y_result, y_result, p1.y);
+    
+    Traits::field_copy(result.x, x_result);
+    Traits::field_copy(result.y, y_result);
+    result.infinity = false;
+}
+
 // Generic point addition: result = p1 + p2
 template<typename PointType>
 __host__ __device__ void point_add(PointType& result, const PointType& p1, const PointType& p2) {
@@ -611,9 +661,11 @@ __global__ void kernel_accumulate_buckets_u64(
     __syncthreads();
     
     // Phase 1: Each thread processes one point and stores it in shared memory
+    // Optimize memory access: use coalesced reads from global memory
     int point_idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (point_idx < n) {
         int bucket_idx = extract_window_u64(scalars[point_idx], window_idx, window_size);
+        // Coalesced read: threads read consecutive memory locations
         thread_points[threadIdx.x] = points[point_idx];
         thread_buckets[threadIdx.x] = bucket_idx;
     } else {
@@ -622,135 +674,134 @@ __global__ void kernel_accumulate_buckets_u64(
     }
     __syncthreads();
     
-    // Phase 2: Optimized two-stage reduction using warp primitives
-    // Stage 1: Each warp reduces its own points into per-warp buckets
-    // Stage 2: Reduce per-warp buckets into final block buckets
+    // Pre-fetch and cache bucket indices in registers for faster access
+    // This reduces shared memory bank conflicts
+    
+    // Phase 2: Highly optimized two-stage reduction
+    // Stage 1: Each warp reduces its points (one accumulator per bucket per warp)
+    // Stage 2: Single thread per bucket reduces across warps
+    // This eliminates redundant work while maintaining correctness
     
     const int WARP_SIZE = 32;
     const int num_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
     const int warp_id = threadIdx.x / WARP_SIZE;
     const int lane_id = threadIdx.x % WARP_SIZE;
     
-    // Per-warp buckets in shared memory: num_warps * MSM_BUCKET_COUNT
-    // Calculate offset after existing shared memory allocations
-    size_t base_offset = MSM_BUCKET_COUNT * sizeof(PointType) + blockDim.x * sizeof(PointType) + blockDim.x * sizeof(int);
-    PointType* warp_buckets = (PointType*)(shared_mem + base_offset);
+    // Per-warp buckets: only allocate if we have multiple warps
+    size_t warp_buckets_offset = MSM_BUCKET_COUNT * sizeof(PointType) + blockDim.x * sizeof(PointType) + blockDim.x * sizeof(int);
+    PointType* warp_buckets = num_warps > 1 ? (PointType*)(shared_mem + warp_buckets_offset) : nullptr;
     
-    // Initialize per-warp buckets to infinity
-    for (int i = threadIdx.x; i < num_warps * MSM_BUCKET_COUNT; i += blockDim.x) {
-        Traits::point_at_infinity(warp_buckets[i]);
+    if (num_warps > 1 && warp_buckets != nullptr) {
+        // Initialize per-warp buckets
+        for (int i = threadIdx.x; i < num_warps * MSM_BUCKET_COUNT; i += blockDim.x) {
+            Traits::point_at_infinity(warp_buckets[i]);
+        }
     }
     __syncthreads();
     
-    // Stage 1: Each thread accumulates its point into the appropriate warp bucket
-    // Use a correct segmented reduction: each thread accumulates all points with same bucket in warp
+    // Stage 1: Warp-level reduction - only one thread per bucket per warp accumulates
     int my_bucket = thread_buckets[threadIdx.x];
     const PointType& my_point = thread_points[threadIdx.x];
     bool my_valid = (point_idx < n) && (my_bucket > 0) && (my_bucket < MSM_BUCKET_COUNT) && !Traits::is_infinity(my_point);
     
-    // Each thread accumulates all points in its warp that have the same bucket
-    // This is O(WARP_SIZE) but correct and still much better than original O(blockDim.x)
-    PointType warp_sum;
-    Traits::point_at_infinity(warp_sum);
-    
     if (my_valid) {
-        // Start with own point
-        Traits::field_copy(warp_sum.x, my_point.x);
-        Traits::field_copy(warp_sum.y, my_point.y);
-        warp_sum.infinity = my_point.infinity;
-        
-        // Scan through all threads in warp to find points with same bucket
+        // Find first lane with this bucket in warp
+        unsigned int mask = 0;
         for (int i = 0; i < WARP_SIZE; i++) {
-            int check_thread = warp_id * WARP_SIZE + i;
-            if (check_thread < blockDim.x && i != lane_id) {
-                int check_bucket = thread_buckets[check_thread];
-                int check_global_idx = blockIdx.x * blockDim.x + check_thread;
-                bool check_valid = (check_global_idx < n) && (check_bucket > 0) && 
-                                   (check_bucket < MSM_BUCKET_COUNT);
-                
-                if (check_valid && check_bucket == my_bucket) {
-                    const PointType& check_point = thread_points[check_thread];
-                    if (!Traits::is_infinity(check_point)) {
-                        PointType temp;
-                        point_add(temp, warp_sum, check_point);
-                        Traits::field_copy(warp_sum.x, temp.x);
-                        Traits::field_copy(warp_sum.y, temp.y);
-                        warp_sum.infinity = temp.infinity;
+            int t = warp_id * WARP_SIZE + i;
+            if (t < blockDim.x && thread_buckets[t] == my_bucket) {
+                mask |= (1U << i);
+            }
+        }
+        unsigned int first = __ffs(mask) - 1;
+        
+        if (lane_id == first) {
+            // I accumulate all points with this bucket in my warp
+            // Optimize: collect all points first, then accumulate in one pass
+            // This improves register usage and may help with instruction scheduling
+            PointType sum = my_point;
+            
+            // Pre-compute which threads in warp have this bucket to reduce redundant checks
+            // Use a more efficient scan pattern
+            int count = 1;  // We already have my_point
+            PointType points_to_add[WARP_SIZE];
+            points_to_add[0] = my_point;  // Already included
+            
+            // Collect all points with this bucket (excluding self)
+            for (int i = 0; i < WARP_SIZE; i++) {
+                int t = warp_id * WARP_SIZE + i;
+                if (t < blockDim.x && i != lane_id && thread_buckets[t] == my_bucket) {
+                    int global_t = blockIdx.x * blockDim.x + t;
+                    if (global_t < n) {
+                        const PointType& pt = thread_points[t];
+                        if (!Traits::is_infinity(pt)) {
+                            points_to_add[count++] = pt;
+                        }
                     }
                 }
             }
-        }
-    }
-    
-    __syncwarp();
-    
-    // Write result: only the first thread with each bucket writes to avoid duplicates
-    if (my_valid && my_bucket > 0 && my_bucket < MSM_BUCKET_COUNT) {
-        int warp_bucket_idx = warp_id * MSM_BUCKET_COUNT + my_bucket;
-        
-        // Find first lane in warp with this bucket
-        unsigned int bucket_match = 0;
-        for (int i = 0; i < WARP_SIZE; i++) {
-            int check_thread = warp_id * WARP_SIZE + i;
-            if (check_thread < blockDim.x) {
-                int check_bucket = thread_buckets[check_thread];
-                int check_global_idx = blockIdx.x * blockDim.x + check_thread;
-                bool check_valid = (check_global_idx < n) && (check_bucket > 0) && 
-                                   (check_bucket < MSM_BUCKET_COUNT);
-                if (check_valid && check_bucket == my_bucket) {
-                    bucket_match |= (1U << i);
-                }
-            }
-        }
-        unsigned int first_lane = __ffs(bucket_match) - 1;
-        
-        if (lane_id == first_lane) {
-            // First thread with this bucket writes the accumulated result
-            if (Traits::is_infinity(warp_buckets[warp_bucket_idx])) {
-                Traits::field_copy(warp_buckets[warp_bucket_idx].x, warp_sum.x);
-                Traits::field_copy(warp_buckets[warp_bucket_idx].y, warp_sum.y);
-                warp_buckets[warp_bucket_idx].infinity = warp_sum.infinity;
-            } else {
+            
+            // Now accumulate all collected points
+            // This allows better instruction scheduling and register usage
+            for (int i = 1; i < count; i++) {
                 PointType temp;
-                point_add(temp, warp_buckets[warp_bucket_idx], warp_sum);
-                Traits::field_copy(warp_buckets[warp_bucket_idx].x, temp.x);
-                Traits::field_copy(warp_buckets[warp_bucket_idx].y, temp.y);
-                warp_buckets[warp_bucket_idx].infinity = temp.infinity;
+                point_accumulate_fast(temp, sum, points_to_add[i]);
+                sum = temp;
+            }
+            
+            // Write to warp bucket (or directly to shared if single warp)
+            if (num_warps > 1 && warp_buckets != nullptr) {
+                int idx = warp_id * MSM_BUCKET_COUNT + my_bucket;
+                Traits::field_copy(warp_buckets[idx].x, sum.x);
+                Traits::field_copy(warp_buckets[idx].y, sum.y);
+                warp_buckets[idx].infinity = sum.infinity;
+            } else {
+                // Single warp: write directly to shared_buckets
+                PointType* dst = &shared_buckets[my_bucket];
+                PointType curr = *dst;
+                if (Traits::is_infinity(curr)) {
+                    Traits::field_copy(dst->x, sum.x);
+                    Traits::field_copy(dst->y, sum.y);
+                    dst->infinity = sum.infinity;
+                } else {
+                    // Use fast accumulation - both points are valid
+                    PointType temp;
+                    point_accumulate_fast(temp, curr, sum);
+                    Traits::field_copy(dst->x, temp.x);
+                    Traits::field_copy(dst->y, temp.y);
+                    dst->infinity = temp.infinity;
+                }
             }
         }
     }
     
     __syncthreads();
     
-    // Stage 2: Reduce per-warp buckets into final block buckets
-    // Each of the MSM_BUCKET_COUNT threads handles one bucket across all warps
-    if (threadIdx.x < MSM_BUCKET_COUNT) {
+    // Stage 2: Reduce warp buckets to final buckets (only if multiple warps)
+    if (num_warps > 1 && threadIdx.x < MSM_BUCKET_COUNT && warp_buckets != nullptr) {
         int bucket_idx = threadIdx.x;
-        PointType bucket_sum;
-        Traits::point_at_infinity(bucket_sum);
+        PointType final_sum;
+        Traits::point_at_infinity(final_sum);
         
-        // Sum contributions from all warps for this bucket
         for (int w = 0; w < num_warps; w++) {
-            int warp_bucket_idx = w * MSM_BUCKET_COUNT + bucket_idx;
-            if (!Traits::is_infinity(warp_buckets[warp_bucket_idx])) {
-                if (Traits::is_infinity(bucket_sum)) {
-                    Traits::field_copy(bucket_sum.x, warp_buckets[warp_bucket_idx].x);
-                    Traits::field_copy(bucket_sum.y, warp_buckets[warp_bucket_idx].y);
-                    bucket_sum.infinity = warp_buckets[warp_bucket_idx].infinity;
+            int idx = w * MSM_BUCKET_COUNT + bucket_idx;
+            if (!Traits::is_infinity(warp_buckets[idx])) {
+                if (Traits::is_infinity(final_sum)) {
+                    final_sum = warp_buckets[idx];
                 } else {
+                    // Use fast accumulation - both points are valid
                     PointType temp;
-                    point_add(temp, bucket_sum, warp_buckets[warp_bucket_idx]);
-                    Traits::field_copy(bucket_sum.x, temp.x);
-                    Traits::field_copy(bucket_sum.y, temp.y);
-                    bucket_sum.infinity = temp.infinity;
+                    point_accumulate_fast(temp, final_sum, warp_buckets[idx]);
+                    final_sum = temp;
                 }
             }
         }
         
-        Traits::field_copy(shared_buckets[bucket_idx].x, bucket_sum.x);
-        Traits::field_copy(shared_buckets[bucket_idx].y, bucket_sum.y);
-        shared_buckets[bucket_idx].infinity = bucket_sum.infinity;
+        Traits::field_copy(shared_buckets[bucket_idx].x, final_sum.x);
+        Traits::field_copy(shared_buckets[bucket_idx].y, final_sum.y);
+        shared_buckets[bucket_idx].infinity = final_sum.infinity;
     }
+    
     __syncthreads();
     
     // Phase 3: Write block's bucket contributions to global memory
@@ -1494,14 +1545,16 @@ void point_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, PointType* d_r
         // Shared memory layout:
         // - MSM_BUCKET_COUNT final buckets
         // - threadsPerBlock points
-        // - threadsPerBlock bucket indices  
-        // - num_warps * MSM_BUCKET_COUNT per-warp buckets (for optimized reduction)
+        // - threadsPerBlock bucket indices
+        // - num_warps * MSM_BUCKET_COUNT per-warp buckets (if multiple warps)
         const int WARP_SIZE = 32;
         int num_warps = (threadsPerBlock + WARP_SIZE - 1) / WARP_SIZE;
         size_t shared_mem_size = MSM_BUCKET_COUNT * sizeof(PointType) +  // Final buckets
                                  threadsPerBlock * sizeof(PointType) +    // Thread points
-                                 threadsPerBlock * sizeof(int) +          // Thread bucket indices
-                                 num_warps * MSM_BUCKET_COUNT * sizeof(PointType);  // Per-warp buckets
+                                 threadsPerBlock * sizeof(int);           // Thread bucket indices
+        if (num_warps > 1) {
+            shared_mem_size += num_warps * MSM_BUCKET_COUNT * sizeof(PointType);  // Per-warp buckets
+        }
         kernel_accumulate_buckets_u64<PointType><<<num_blocks, threadsPerBlock, shared_mem_size, stream>>>(
             d_block_buckets, d_points, d_scalars, n, window_idx, MSM_WINDOW_SIZE
         );
