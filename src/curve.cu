@@ -750,6 +750,7 @@ __global__ void kernel_accumulate_buckets_multi(
 // Using Horner's method: window_sum = bucket[1] + 2 * (bucket[2] + 2 * (bucket[3] + ... + 2 * bucket[15]))
 // Then result = result * 2^window_size + window_sum
 // Helper function: Compute k * P using binary method (for small k, 1 <= k <= 15)
+// Device version
 template<typename PointType>
 __device__ void point_scalar_mul_small(PointType& result, const PointType& P, int k) {
     using Traits = PointTraits<PointType>;
@@ -775,6 +776,55 @@ __device__ void point_scalar_mul_small(PointType& result, const PointType& P, in
     
     // Find the MSB of k
     int msb = 31 - __clz(k);  // __clz counts leading zeros, so msb is the highest set bit
+    
+    // Process bits from msb-1 down to 0
+    for (int bit = msb - 1; bit >= 0; bit--) {
+        point_double(acc, acc);
+        if (k & (1 << bit)) {
+            PointType temp;
+            point_add(temp, acc, P);
+            Traits::field_copy(acc.x, temp.x);
+            Traits::field_copy(acc.y, temp.y);
+            acc.infinity = temp.infinity;
+        }
+    }
+    
+    Traits::field_copy(result.x, acc.x);
+    Traits::field_copy(result.y, acc.y);
+    result.infinity = acc.infinity;
+}
+
+// Host version: Compute k * P using binary method (for small k, 1 <= k <= 15)
+template<typename PointType>
+__host__ void point_scalar_mul_small_host(PointType& result, const PointType& P, int k) {
+    using Traits = PointTraits<PointType>;
+    
+    if (k == 0 || Traits::is_infinity(P)) {
+        Traits::point_at_infinity(result);
+        return;
+    }
+    
+    if (k == 1) {
+        Traits::field_copy(result.x, P.x);
+        Traits::field_copy(result.y, P.y);
+        result.infinity = P.infinity;
+        return;
+    }
+    
+    // Binary scalar multiplication: k * P
+    // Start with P, then for each bit from MSB-1 to LSB: double, then add P if bit is set
+    PointType acc;
+    Traits::field_copy(acc.x, P.x);
+    Traits::field_copy(acc.y, P.y);
+    acc.infinity = P.infinity;
+    
+    // Find the MSB of k (using portable method for host)
+    int msb = 0;
+    int temp_k = k;
+    while (temp_k > 1) {
+        temp_k >>= 1;
+        msb++;
+    }
     
     // Process bits from msb-1 down to 0
     for (int bit = msb - 1; bit >= 0; bit--) {
@@ -877,6 +927,78 @@ __global__ void kernel_combine_buckets(
             for (int i = 0; i < MSM_WINDOW_SIZE; i++) {
                 point_double(*result, *result);
             }
+        }
+    }
+}
+
+// CPU version: Combine buckets for a window and accumulate into result
+// This is more efficient than the GPU kernel for small bucket counts (16 buckets)
+template<typename PointType>
+__host__ void combine_buckets_cpu(
+    PointType& result,
+    const PointType* buckets,
+    int num_buckets,
+    int window_idx
+) {
+    (void)window_idx;  // Unused parameter, kept for API consistency
+    using Traits = PointTraits<PointType>;
+    
+    // Compute weighted buckets: i * bucket[i] for i = 1 to num_buckets-1
+    PointType weighted_buckets[MSM_BUCKET_COUNT];
+    for (int i = 1; i < num_buckets; i++) {
+        if (!Traits::is_infinity(buckets[i])) {
+            point_scalar_mul_small_host(weighted_buckets[i-1], buckets[i], i);
+        } else {
+            Traits::point_at_infinity(weighted_buckets[i-1]);
+        }
+    }
+    
+    // Reduce all weighted buckets into window_sum
+    PointType window_sum;
+    Traits::point_at_infinity(window_sum);
+    
+    for (int i = 0; i < num_buckets - 1; i++) {
+        if (!Traits::is_infinity(weighted_buckets[i])) {
+            if (Traits::is_infinity(window_sum)) {
+                Traits::field_copy(window_sum.x, weighted_buckets[i].x);
+                Traits::field_copy(window_sum.y, weighted_buckets[i].y);
+                window_sum.infinity = weighted_buckets[i].infinity;
+            } else {
+                PointType temp;
+                point_add(temp, window_sum, weighted_buckets[i]);
+                Traits::field_copy(window_sum.x, temp.x);
+                Traits::field_copy(window_sum.y, temp.y);
+                window_sum.infinity = temp.infinity;
+            }
+        }
+    }
+    
+    // Add window sum to result
+    // For windows processed from MSB to LSB:
+    // - First window (MSB, highest window_idx): result = window_sum (no multiplication)
+    // - Subsequent windows: result = result * 2^window_size + window_sum
+    if (!Traits::is_infinity(window_sum)) {
+        if (Traits::is_infinity(result)) {
+            // First non-zero window: just copy window_sum
+            Traits::field_copy(result.x, window_sum.x);
+            Traits::field_copy(result.y, window_sum.y);
+            result.infinity = window_sum.infinity;
+        } else {
+            // Multiply result by 2^window_size before adding window_sum
+            for (int i = 0; i < MSM_WINDOW_SIZE; i++) {
+                point_double(result, result);
+            }
+            // Add window_sum to result
+            PointType temp;
+            point_add(temp, result, window_sum);
+            Traits::field_copy(result.x, temp.x);
+            Traits::field_copy(result.y, temp.y);
+            result.infinity = temp.infinity;
+        }
+    } else if (!Traits::is_infinity(result)) {
+        // Window sum is zero but result is not: still need to multiply result
+        for (int i = 0; i < MSM_WINDOW_SIZE; i++) {
+            point_double(result, result);
         }
     }
 }
@@ -1293,13 +1415,25 @@ void point_msm_u64_async(cudaStream_t stream, uint32_t gpu_index, PointType* d_r
         );
         check_cuda_error(cudaGetLastError());
         
-        // Combine final buckets and accumulate into result
-        // Use 16 threads (one per bucket) with shared memory for parallel binary scalar multiplication and reduction
-        size_t combine_shared_mem = MSM_BUCKET_COUNT * sizeof(PointType);
-        kernel_combine_buckets<PointType><<<1, MSM_BUCKET_COUNT, combine_shared_mem, stream>>>(
-            d_result, d_final_buckets, MSM_BUCKET_COUNT, window_idx
-        );
-        check_cuda_error(cudaGetLastError());
+        // Combine final buckets and accumulate into result (CPU version for better performance)
+        // Copy buckets and result to host, compute on CPU, then copy result back
+        PointType h_buckets[MSM_BUCKET_COUNT];
+        PointType h_result;
+        
+        // Synchronize stream before copying
+        cuda_synchronize_stream(stream, gpu_index);
+        
+        // Copy buckets from device to host
+        check_cuda_error(cudaMemcpy(h_buckets, d_final_buckets, MSM_BUCKET_COUNT * sizeof(PointType), cudaMemcpyDeviceToHost));
+        
+        // Copy current result from device to host
+        check_cuda_error(cudaMemcpy(&h_result, d_result, sizeof(PointType), cudaMemcpyDeviceToHost));
+        
+        // Combine buckets on CPU
+        combine_buckets_cpu<PointType>(h_result, h_buckets, MSM_BUCKET_COUNT, window_idx);
+        
+        // Copy result back to device
+        check_cuda_error(cudaMemcpy(d_result, &h_result, sizeof(PointType), cudaMemcpyHostToDevice));
     }
 }
 
@@ -1347,13 +1481,25 @@ void point_msm_async(cudaStream_t stream, uint32_t gpu_index, PointType* d_resul
         );
         check_cuda_error(cudaGetLastError());
         
-        // Combine buckets and accumulate into result
-        // Use 16 threads (one per bucket) with shared memory for parallel binary scalar multiplication and reduction
-        size_t combine_shared_mem = MSM_BUCKET_COUNT * sizeof(PointType);
-        kernel_combine_buckets<PointType><<<1, MSM_BUCKET_COUNT, combine_shared_mem, stream>>>(
-            d_result, d_buckets, MSM_BUCKET_COUNT, window_idx
-        );
-        check_cuda_error(cudaGetLastError());
+        // Combine buckets and accumulate into result (CPU version for better performance)
+        // Copy buckets and result to host, compute on CPU, then copy result back
+        PointType h_buckets[MSM_BUCKET_COUNT];
+        PointType h_result;
+        
+        // Synchronize stream before copying
+        cuda_synchronize_stream(stream, gpu_index);
+        
+        // Copy buckets from device to host
+        check_cuda_error(cudaMemcpy(h_buckets, d_buckets, MSM_BUCKET_COUNT * sizeof(PointType), cudaMemcpyDeviceToHost));
+        
+        // Copy current result from device to host
+        check_cuda_error(cudaMemcpy(&h_result, d_result, sizeof(PointType), cudaMemcpyDeviceToHost));
+        
+        // Combine buckets on CPU
+        combine_buckets_cpu<PointType>(h_result, h_buckets, MSM_BUCKET_COUNT, window_idx);
+        
+        // Copy result back to device
+        check_cuda_error(cudaMemcpy(d_result, &h_result, sizeof(PointType), cudaMemcpyHostToDevice));
     }
 }
 
