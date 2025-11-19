@@ -71,6 +71,11 @@ set(FP_SOURCES
     src/curve.cu
 )
 
+# Rust API C wrapper (CUDA for CUDA headers)
+set(RUST_WRAPPER_SOURCES
+    rust-api/src/c_wrapper.cu
+)
+
 set(FP_HEADERS
     include/device.h
     include/fp.h
@@ -81,7 +86,7 @@ set(FP_HEADERS
 )
 
 # Create library
-add_library(fp_arithmetic STATIC ${FP_SOURCES} ${FP_HEADERS})
+add_library(fp_arithmetic STATIC ${FP_SOURCES} ${FP_HEADERS} ${RUST_WRAPPER_SOURCES})
 
 # Set target properties
 set_target_properties(fp_arithmetic PROPERTIES
@@ -93,6 +98,7 @@ set_target_properties(fp_arithmetic PROPERTIES
 target_include_directories(fp_arithmetic
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/rust-api/include
 )
 
 # Test executable
@@ -213,33 +219,3 @@ message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "CUDA standard: ${CMAKE_CUDA_STANDARD}")
 message(STATUS "DEBUG flag: ${DEBUG}")
-
-# Simple projective test
-add_executable(test_projective_simple
-    test_projective_simple.cu
-)
-
-target_link_libraries(test_projective_simple
-    fp_arithmetic
-    ${CUDA_LIBRARIES}
-)
-
-# MSM simple test
-add_executable(test_msm_simple
-    test_msm_simple.cu
-)
-
-target_link_libraries(test_msm_simple
-    fp_arithmetic
-    ${CUDA_LIBRARIES}
-)
-
-# Test doubling with Z != 1
-add_executable(test_double_z
-    test_double_z.cu
-)
-
-target_link_libraries(test_double_z
-    fp_arithmetic
-    ${CUDA_LIBRARIES}
-)
